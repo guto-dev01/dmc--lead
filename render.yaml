@@ -1,0 +1,131 @@
+# ============================================================
+# ImobPro / Complexo DMC — Blueprint de deploy na Render
+# Cada serviço do docker-compose vira um serviço da Render.
+# Após o 1º deploy, confira as URLs reais (ver DEPLOY_RENDER.md).
+# ============================================================
+
+databases:
+  - name: imobpro-db
+    databaseName: imobpro
+    user: imobpro
+    region: oregon
+    plan: free            # troque por um plano pago: o free expira em ~30 dias
+
+  - name: evolution-db    # banco próprio da Evolution (WhatsApp)
+    databaseName: evolution
+    user: evolution
+    region: oregon
+    plan: free
+
+services:
+  # ----- Redis (cache da Evolution) -----
+  - type: keyvalue
+    name: imobpro-redis
+    region: oregon
+    plan: free
+    ipAllowList: []        # somente rede interna
+
+  # ----- Backend (FastAPI) -----
+  - type: web
+    name: imobpro-backend
+    runtime: docker
+    dockerfilePath: backend/Dockerfile
+    dockerContext: backend
+    region: oregon
+    plan: starter
+    healthCheckPath: /
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase: { name: imobpro-db, property: connectionString }
+      - key: EVOLUTION_API_URL
+        value: https://imobpro-evolution.onrender.com
+      - key: EVOLUTION_API_KEY
+        sync: false        # use a MESMA chave no serviço imobpro-evolution
+      - key: EVOLUTION_INSTANCE
+        value: imobpro
+      - key: WEBHOOK_URL
+        value: https://imobpro-backend.onrender.com/api/whatsapp/webhook
+      - key: FRONTEND_ORIGIN
+        value: https://imobpro-frontend.onrender.com
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ADMIN_USERNAME
+        value: admin
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: GOOGLE_CSE_ID
+        sync: false
+      - key: SERPER_API_KEY
+        sync: false
+
+  # ----- Frontend (Next.js) -----
+  - type: web
+    name: imobpro-frontend
+    runtime: docker
+    dockerfilePath: frontend/Dockerfile
+    dockerContext: frontend
+    region: oregon
+    plan: starter
+    healthCheckPath: /
+    envVars:
+      # "assada" no build do Next — precisa ser a URL pública do backend
+      - key: NEXT_PUBLIC_API_URL
+        value: https://imobpro-backend.onrender.com
+
+  # ----- Evolution API (WhatsApp) -----
+  - type: web
+    name: imobpro-evolution
+    runtime: image
+    image:
+      url: docker.io/evoapicloud/evolution-api:v2.3.7
+    region: oregon
+    plan: starter          # disco exige plano pago
+    disk:
+      name: evolution-instances
+      mountPath: /evolution/instances
+      sizeGB: 1
+    envVars:
+      - key: SERVER_PORT
+        value: "8080"
+      - key: SERVER_URL
+        value: https://imobpro-evolution.onrender.com
+      - key: AUTHENTICATION_API_KEY
+        sync: false        # MESMA chave do backend (EVOLUTION_API_KEY)
+      - key: AUTHENTICATION_TYPE
+        value: apikey
+      - key: DATABASE_ENABLED
+        value: "true"
+      - key: DATABASE_PROVIDER
+        value: postgresql
+      - key: DATABASE_CONNECTION_URI
+        fromDatabase: { name: evolution-db, property: connectionString }
+      - key: DATABASE_CONNECTION_CLIENT_NAME
+        value: evolution_imobpro
+      - key: DATABASE_SAVE_DATA_INSTANCE
+        value: "true"
+      - key: DATABASE_SAVE_DATA_NEW_MESSAGE
+        value: "true"
+      - key: DATABASE_SAVE_MESSAGE_UPDATE
+        value: "true"
+      - key: DATABASE_SAVE_DATA_CONTACTS
+        value: "true"
+      - key: DATABASE_SAVE_DATA_CHATS
+        value: "true"
+      - key: CACHE_REDIS_ENABLED
+        value: "true"
+      - key: CACHE_REDIS_URI
+        fromService: { name: imobpro-redis, type: keyvalue, property: connectionString }
+      - key: CACHE_REDIS_PREFIX_KEY
+        value: evolution
+      - key: CACHE_LOCAL_ENABLED
+        value: "false"
+      - key: CONFIG_SESSION_PHONE_VERSION
+        value: 2.3000.1035194821
+      - key: CONFIG_SESSION_PHONE_CLIENT
+        value: ImobPro
+      - key: CONFIG_SESSION_PHONE_NAME
+        value: Chrome
+      - key: LOG_LEVEL
+        value: ERROR

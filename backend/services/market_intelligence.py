@@ -1,0 +1,851 @@
+import base64
+import asyncio
+import json
+import os
+import re
+import unicodedata
+from collections import Counter
+from typing import Optional
+from urllib.parse import parse_qs, unquote, urljoin, urlparse, quote
+
+import httpx
+from bs4 import BeautifulSoup
+
+SEARCH_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+}
+
+BLACKLIST_DOMAINS = {
+    "bing.com",
+    "facebook.com",
+    "instagram.com",
+    "youtube.com",
+    "linkedin.com",
+    "wikipedia.org",
+    "maps.google.com",
+}
+
+LISTING_HINTS = (
+    "apartamento",
+    "studio",
+    "studios",
+    "cobertura",
+    "sala",
+    "salas",
+    "loja",
+    "lancamento",
+    "lançamento",
+    "empreendimento",
+    "residencial",
+    "condominio",
+    "condomínio",
+    "imovel",
+    "imóvel",
+)
+
+AREA_HINTS = (
+    "consolação",
+    "consolacao",
+    "jardins",
+    "bela vista",
+    "bela-vista",
+    "vila olimpia",
+    "vila olímpia",
+    "paulista",
+    "centro",
+)
+
+
+def _strip_accents(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value or "")
+    return "".join(ch for ch in normalized if not unicodedata.combining(ch))
+
+
+def clean_text(value: str) -> str:
+    return re.sub(r"\s+", " ", _strip_accents(value or "")).strip()
+
+
+def _fetch_sync(url: str, params: Optional[dict] = None) -> str:
+    response = httpx.get(
+        url,
+        params=params,
+        headers=SEARCH_HEADERS,
+        timeout=14,
+        follow_redirects=True,
+    )
+    response.raise_for_status()
+    return response.text
+
+
+def _decode_bing_url(url: str) -> str:
+    if not url:
+        return ""
+    if "bing.com/ck/a" not in url:
+        return url
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query)
+    encoded = params.get("u", [None])[0]
+    if not encoded:
+        return url
+    encoded = unquote(encoded)
+    if encoded.startswith("a1"):
+        encoded = encoded[2:]
+    try:
+        padded = encoded + "=" * (-len(encoded) % 4)
+        decoded = base64.b64decode(padded).decode("utf-8", "ignore")
+        if decoded.startswith("http"):
+            return decoded
+    except Exception:
+        pass
+    return url
+
+
+def _bing_search(query: str, limit: int = 6) -> list[dict]:
+    html = _fetch_sync("https://www.bing.com/search", {"q": query})
+    soup = BeautifulSoup(html, "html.parser")
+    results = []
+    for item in soup.select("li.b_algo")[:limit]:
+        anchor = item.select_one("h2 a")
+        if not anchor:
+            continue
+        href = _decode_bing_url(anchor.get("href", ""))
+        title = anchor.get_text(" ", strip=True)
+        snippet_tag = item.select_one("p")
+        snippet = snippet_tag.get_text(" ", strip=True) if snippet_tag else ""
+        if href:
+            results.append({"url": href, "title": title, "snippet": snippet})
+    return results
+
+
+SERPER_ENDPOINT = "https://google.serper.dev/search"
+BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
+GOOGLE_CSE_ENDPOINT = "https://www.googleapis.com/customsearch/v1"
+
+
+def _google_cse_search(query: str, limit: int = 6) -> list[dict]:
+    """Busca via API oficial do Google (Custom Search JSON API).
+    Precisa de GOOGLE_API_KEY e GOOGLE_CSE_ID."""
+    key = os.environ.get("GOOGLE_API_KEY", "").strip()
+    cx = os.environ.get("GOOGLE_CSE_ID", "").strip()
+    if not key or not cx:
+        return []
+    try:
+        response = httpx.get(
+            GOOGLE_CSE_ENDPOINT,
+            params={
+                "key": key,
+                "cx": cx,
+                "q": query,
+                "num": min(max(int(limit), 1), 10),
+                "gl": "br",
+                "hl": "pt",
+                "lr": "lang_pt",
+            },
+            timeout=20,
+        )
+        if response.status_code != 200:
+            return []
+        data = response.json()
+    except Exception:
+        return []
+
+    results = []
+    for item in (data.get("items") or [])[:limit]:
+        href = item.get("link", "")
+        if not href:
+            continue
+        results.append(
+            {
+                "url": href,
+                "title": clean_text(item.get("title", "")),
+                "snippet": clean_text(item.get("snippet", "")),
+            }
+        )
+    return results
+
+
+def _serper_search(query: str, limit: int = 6) -> list[dict]:
+    """Busca via Serper.dev (resultados do Google). Precisa de SERPER_API_KEY."""
+    key = os.environ.get("SERPER_API_KEY", "").strip()
+    if not key:
+        return []
+    try:
+        response = httpx.post(
+            SERPER_ENDPOINT,
+            json={"q": query, "gl": "br", "hl": "pt", "num": min(max(int(limit), 1), 10)},
+            headers={"X-API-KEY": key, "Content-Type": "application/json"},
+            timeout=20,
+        )
+        if response.status_code != 200:
+            return []
+        data = response.json()
+    except Exception:
+        return []
+
+    results = []
+    for item in (data.get("organic") or [])[:limit]:
+        href = item.get("link", "")
+        if not href:
+            continue
+        results.append(
+            {
+                "url": href,
+                "title": clean_text(item.get("title", "")),
+                "snippet": clean_text(item.get("snippet", "")),
+            }
+        )
+    return results
+
+
+def _brave_search(query: str, limit: int = 6) -> list[dict]:
+    """Busca via Brave Search API (precisa de BRAVE_API_KEY no ambiente)."""
+    key = os.environ.get("BRAVE_API_KEY", "").strip()
+    if not key:
+        return []
+    try:
+        response = httpx.get(
+            BRAVE_ENDPOINT,
+            params={
+                "q": query,
+                "count": min(max(int(limit), 1), 20),
+                "country": "BR",
+                "search_lang": "pt",
+            },
+            headers={
+                "Accept": "application/json",
+                "Accept-Encoding": "gzip",
+                "X-Subscription-Token": key,
+            },
+            timeout=20,
+        )
+        if response.status_code != 200:
+            return []
+        data = response.json()
+    except Exception:
+        return []
+
+    results = []
+    for item in (data.get("web", {}) or {}).get("results", [])[:limit]:
+        href = item.get("url", "")
+        if not href:
+            continue
+        results.append(
+            {
+                "url": href,
+                "title": clean_text(item.get("title", "")),
+                "snippet": clean_text(item.get("description", "")),
+            }
+        )
+    return results
+
+
+def _has_search_provider() -> bool:
+    """Há um provedor de busca utilizável? (Google CSE, Serper ou Brave)."""
+    g = os.environ.get("GOOGLE_API_KEY", "").strip() and os.environ.get("GOOGLE_CSE_ID", "").strip()
+    return bool(
+        g
+        or os.environ.get("SERPER_API_KEY", "").strip()
+        or os.environ.get("BRAVE_API_KEY", "").strip()
+    )
+
+
+def _web_search(query: str, limit: int = 6) -> list[dict]:
+    """Busca na web: Google oficial (CSE) > Serper.dev > Brave, conforme as chaves."""
+    if os.environ.get("GOOGLE_API_KEY", "").strip() and os.environ.get("GOOGLE_CSE_ID", "").strip():
+        return _google_cse_search(query, limit)
+    if os.environ.get("SERPER_API_KEY", "").strip():
+        return _serper_search(query, limit)
+    if os.environ.get("BRAVE_API_KEY", "").strip():
+        return _brave_search(query, limit)
+    return []
+
+
+def _page_text_from_html(html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    return soup.get_text(" ", strip=True)
+
+
+def _extract_meta(soup: BeautifulSoup, name: str) -> Optional[str]:
+    tag = soup.select_one(f'meta[property="{name}"], meta[name="{name}"]')
+    return tag.get("content") if tag else None
+
+
+def _extract_jsonld_candidates(soup: BeautifulSoup) -> list[dict]:
+    candidates: list[dict] = []
+    for script in soup.select('script[type="application/ld+json"]'):
+        raw = script.string or script.get_text(strip=True)
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except Exception:
+            continue
+
+        stack = [data]
+        while stack:
+            current = stack.pop()
+            if isinstance(current, dict):
+                stack.extend(current.values())
+                name = current.get("name")
+                url = current.get("url")
+                if not name and not url:
+                    continue
+                candidate = {
+                    "name": name,
+                    "url": url,
+                    "description": current.get("description"),
+                    "type": current.get("@type"),
+                    "address": current.get("address"),
+                    "offers": current.get("offers"),
+                    "floorSize": current.get("floorSize"),
+                    "numberOfBedrooms": current.get("numberOfBedrooms"),
+                    "numberOfBathroomsTotal": current.get("numberOfBathroomsTotal"),
+                    "numberOfRooms": current.get("numberOfRooms"),
+                }
+                candidates.append(candidate)
+            elif isinstance(current, list):
+                stack.extend(current)
+    return candidates
+
+
+def _infer_kind(text: str) -> str:
+    hay = clean_text(text).lower()
+    if any(keyword in hay for keyword in ("incorporadora", "construtora")):
+        return "construtora"
+    if any(keyword in hay for keyword in ("imobiliaria", "imobiliária", "creci", "consultoria de imoveis", "consultoria de imóveis")):
+        return "imobiliaria"
+    if any(keyword in hay for keyword in ("empreendimento", "lancamento", "lançamento", "condominio", "condomínio")):
+        return "empreendimento"
+    if any(keyword in hay for keyword in ("apartamento", "studio", "cobertura", "sala", "loja", "imovel", "imóvel")):
+        return "imovel"
+    return "outro"
+
+
+def _extract_price(text: str) -> Optional[str]:
+    match = re.search(r"R\$\s?[\d\.\s]+(?:,\d{2})?", text)
+    return match.group(0).replace("  ", " ") if match else None
+
+
+def _extract_number(text: str, patterns: tuple[str, ...]) -> Optional[int]:
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            try:
+                return int(re.sub(r"\D", "", match.group(1)))
+            except Exception:
+                continue
+    return None
+
+
+def _extract_area_m2(text: str) -> Optional[int]:
+    match = re.search(r"(\d+(?:[.,]\d+)?)\s*m²", text, re.IGNORECASE)
+    if not match:
+        return None
+    return int(float(match.group(1).replace(",", ".")))
+
+
+def _extract_address(text: str, area: str) -> Optional[str]:
+    area_norm = clean_text(area).lower()
+    match = re.search(
+        r"(Rua|R\.|Avenida|Av\.|Alameda|Praça|Pca\.|Travessa)\s+[A-Za-zÀ-ÿ0-9\s\.\-]+(?:,\s*\d+[^\.]*)?",
+        text,
+        re.IGNORECASE,
+    )
+    if match:
+        return match.group(0).strip(" ,.;")
+    if area_norm and area_norm in clean_text(text).lower():
+        return area
+    return None
+
+
+def _pick_best_name(title: str, h1: str, candidates: list[dict]) -> str:
+    for value in (h1, title):
+        if value and len(value.strip()) > 3:
+            return value.strip()
+    for candidate in candidates:
+        name = candidate.get("name")
+        if name and len(str(name).strip()) > 3:
+            return str(name).strip()
+    return "Item imobiliário"
+
+
+def _canonical_url(url: str) -> str:
+    parsed = urlparse(url)
+    if not parsed.scheme:
+        return url
+    cleaned = parsed._replace(fragment="").geturl()
+    return cleaned.rstrip("/")
+
+
+def _domain(url: str) -> str:
+    try:
+        return urlparse(url).netloc.replace("www.", "")
+    except Exception:
+        return ""
+
+
+def _looks_blocked(url: str) -> bool:
+    domain = _domain(url)
+    return any(blocked in domain for blocked in BLACKLIST_DOMAINS)
+
+
+def _item_signature(item: dict) -> str:
+    return "|".join(
+        [
+            clean_text(item.get("nome", "")).lower(),
+            clean_text(item.get("tipo", "")).lower(),
+            clean_text(item.get("endereco", "")).lower(),
+            clean_text(item.get("bairro", "")).lower(),
+            clean_text(item.get("url", "")).lower(),
+        ]
+    )
+
+
+def _item_score(item: dict) -> int:
+    fields = [
+        "nome",
+        "tipo",
+        "endereco",
+        "bairro",
+        "municipio",
+        "url",
+        "fonte",
+    ]
+    filled = sum(1 for field in fields if item.get(field))
+    bonus = 6 if item.get("empresa_id") else 0
+    bonus += 4 if item.get("valor_venda") or item.get("valor_locacao") else 0
+    bonus += 4 if item.get("dormitorios") or item.get("area_privativa") else 0
+    return max(0, min(100, int((filled / len(fields)) * 80) + bonus))
+
+
+def _page_candidates_from_html(html: str, url: str, query: str, empresa: Optional[dict], area: str) -> list[dict]:
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text(" ", strip=True)
+    title = _extract_meta(soup, "og:title") or (soup.title.get_text(" ", strip=True) if soup.title else "")
+    description = _extract_meta(soup, "description") or _extract_meta(soup, "og:description")
+    h1 = soup.find("h1").get_text(" ", strip=True) if soup.find("h1") else ""
+    jsonld_candidates = _extract_jsonld_candidates(soup)
+    items: list[dict] = []
+
+    def build_item(name: str, source_url: str, extra: Optional[dict] = None) -> dict:
+        combined = " ".join([name or "", title or "", h1 or "", description or "", text[:3500]])
+        item = {
+            "empresa_id": empresa.get("id") if empresa else None,
+            "empresa_nome": empresa.get("nome") if empresa else None,
+            "area": area,
+            "tipo": _infer_kind(combined),
+            "nome": name or _pick_best_name(title, h1, jsonld_candidates),
+            "subtitulo": description or "",
+            "bairro": _extract_address(combined, area),
+            "municipio": "São Paulo" if "são paulo" in clean_text(combined).lower() or "sp" in clean_text(area).lower() else None,
+            "uf": "SP",
+            "endereco": _extract_address(combined, area),
+            "valor_venda": None,
+            "valor_locacao": None,
+            "dormitorios": _extract_number(combined, (r"(\d+)\s*dorm", r"(\d+)\s*quartos?")),
+            "suites": _extract_number(combined, (r"(\d+)\s*sui", r"(\d+)\s*suí")),
+            "vagas": _extract_number(combined, (r"(\d+)\s*vagas?",)),
+            "area_privativa": _extract_area_m2(combined),
+            "status": "capturado",
+            "empreendimento": name if _infer_kind(combined) == "empreendimento" else None,
+            "url": _canonical_url(source_url),
+            "fonte": _domain(source_url) or source_url,
+            "dados": {
+                "query": query,
+                "title": title,
+                "h1": h1,
+                "description": description,
+                "snippet": combined[:1200],
+            },
+        }
+        if extra:
+            item["dados"].update(extra)
+
+        price = _extract_price(combined)
+        if price:
+            item["dados"]["preco_texto"] = price
+            if "loca" in clean_text(combined).lower():
+                item["valor_locacao"] = price
+            else:
+                item["valor_venda"] = price
+
+        if isinstance(extra, dict):
+            offers = extra.get("offers") or {}
+            if isinstance(offers, dict):
+                price_value = offers.get("price")
+                if price_value:
+                    item["dados"]["offer_price"] = price_value
+
+        item["score"] = _item_score(item)
+        return item
+
+    # JSON-LD candidates first
+    seen = set()
+    for candidate in jsonld_candidates:
+        name = candidate.get("name")
+        if not name:
+            continue
+        sig = clean_text(str(name)).lower()
+        if sig in seen:
+            continue
+        seen.add(sig)
+        items.append(build_item(str(name), candidate.get("url") or url, candidate))
+        if len(items) >= 5:
+            break
+
+    if not items and any(keyword in clean_text(text).lower() for keyword in LISTING_HINTS):
+        items.append(build_item(_pick_best_name(title, h1, jsonld_candidates), url))
+
+    return items
+
+
+def _normalize_company_tokens(company_name: str) -> list[str]:
+    normalized = _strip_accents(company_name).lower()
+    parts = re.split(r"[^a-z0-9]+", normalized)
+    stopwords = {
+        "incorporadora",
+        "construtora",
+        "imobiliaria",
+        "imobiliária",
+        "consultoria",
+        "assessoria",
+        "empreendimentos",
+        "realty",
+        "brazil",
+        "grupo",
+        "sa",
+        "s.a",
+        "s.a.",
+        "de",
+        "da",
+        "do",
+        "dos",
+        "das",
+        "e",
+    }
+    return [part for part in parts if part and part not in stopwords]
+
+
+def _guess_company_domains(company_name: str) -> list[str]:
+    tokens = _normalize_company_tokens(company_name)
+    if not tokens:
+        return []
+
+    candidates = []
+    joined = "".join(tokens)
+    first = tokens[0]
+    first_two = "".join(tokens[:2]) if len(tokens) >= 2 else first
+    first_three = "".join(tokens[:3]) if len(tokens) >= 3 else first_two
+
+    for slug in [joined, first_three, first_two, first]:
+        if slug and slug not in candidates:
+            candidates.append(slug)
+    return candidates
+
+
+def _candidate_internal_links(html: str, base_url: str) -> list[str]:
+    soup = BeautifulSoup(html, "html.parser")
+    keywords = (
+        "empreend",
+        "lanc",
+        "lanç",
+        "imov",
+        "venda",
+        "alug",
+        "busca",
+        "resid",
+        "decor",
+        "projeto",
+        "produto",
+        "plantao",
+        "plantão",
+    )
+    seen = set()
+    links = []
+
+    for anchor in soup.select("a[href]"):
+        href = anchor.get("href", "")
+        text = anchor.get_text(" ", strip=True)
+        absolute = urljoin(base_url, href)
+        if not absolute.startswith("http"):
+            continue
+        if urlparse(absolute).netloc != urlparse(base_url).netloc:
+            continue
+        haystack = f"{text} {absolute}".lower()
+        if not any(keyword in haystack for keyword in keywords):
+            continue
+        if absolute in seen:
+            continue
+        seen.add(absolute)
+        links.append(absolute)
+    return links
+
+
+def _candidate_sitemap_links(base_url: str, limit: int = 25) -> list[str]:
+    sitemap_urls = [
+        urljoin(base_url, "/sitemap.xml"),
+        urljoin(base_url, "/sitemap_index.xml"),
+    ]
+    keywords = ("empreend", "lanc", "lanç", "imov", "venda", "alug", "resid", "decor")
+    results = []
+    seen = set()
+
+    for sitemap_url in sitemap_urls:
+        try:
+            xml = _fetch_sync(sitemap_url)
+        except Exception:
+            continue
+        for loc in re.findall(r"<loc>(.*?)</loc>", xml, flags=re.IGNORECASE):
+            loc = loc.strip()
+            if not loc.startswith("http"):
+                continue
+            if urlparse(loc).netloc != urlparse(base_url).netloc:
+                continue
+            haystack = loc.lower()
+            if not any(keyword in haystack for keyword in keywords):
+                continue
+            if loc in seen:
+                continue
+            seen.add(loc)
+            results.append(loc)
+            if len(results) >= limit:
+                return results
+    return results
+
+
+def _discover_official_site(company_name: str, website: Optional[str] = None) -> Optional[str]:
+    candidates = []
+    if website and website.startswith("http"):
+        candidates.append(website.rstrip("/"))
+
+    for slug in _guess_company_domains(company_name):
+        for template in ("https://{slug}.com.br/", "https://www.{slug}.com.br/", "https://{slug}.com/"):
+            candidates.append(template.format(slug=slug))
+
+    company_tokens = _normalize_company_tokens(company_name)
+    for url in candidates:
+        try:
+            html = _fetch_sync(url)
+        except Exception:
+            continue
+
+        text = clean_text(BeautifulSoup(html, "html.parser").get_text(" ", strip=True)).lower()
+        title = BeautifulSoup(html, "html.parser").title.get_text(" ", strip=True) if BeautifulSoup(html, "html.parser").title else ""
+        if company_tokens and any(token in text for token in company_tokens[:2]):
+            return url
+        if company_tokens and any(token in clean_text(title).lower() for token in company_tokens[:2]):
+            return url
+        if any(keyword in text for keyword in ("empreend", "lanc", "lanç", "imov", "apartamento", "imobiliaria", "imobiliária")):
+            return url
+
+    # Fallback: descobre o site oficial via busca na web (Brave)
+    if not _has_search_provider():
+        return None
+    for hit in _web_search(f"{company_name} site oficial empreendimentos", limit=5):
+        url = hit.get("url", "")
+        if not url or _looks_blocked(url):
+            continue
+        host = _domain(url).lower()
+        if any(host.endswith(s) or s in host for s in ("vivareal", "zapimoveis", "imovelweb", "quintoandar", "olx", "chavesnamao")):
+            continue  # portais de classificados nao sao o site da construtora
+        if company_tokens and any(token in host.replace("-", "") for token in company_tokens[:2]):
+            return f"https://{host}"
+
+    return None
+
+
+def _crawl_site_for_items(base_url: str, company: dict, area: str, include_area_listings: bool) -> list[dict]:
+    pages = [base_url]
+    try:
+        home_html = _fetch_sync(base_url)
+    except Exception:
+        return []
+
+    pages.extend(_candidate_internal_links(home_html, base_url)[:12])
+    pages.extend(_candidate_sitemap_links(base_url, limit=20))
+
+    guessed_paths = [
+        "/empreendimentos",
+        "/empreendimento",
+        "/lancamentos",
+        "/lancamento",
+        "/imoveis",
+        "/imovel",
+        "/busca",
+        "/imoveis-a-venda",
+        "/imoveis-para-alugar",
+    ]
+    pages.extend(urljoin(base_url, path) for path in guessed_paths)
+
+    if include_area_listings:
+        pages.extend(urljoin(base_url, path) for path in ["/home", "/catalogo", "/projetos"])
+
+    seen_pages = set()
+    items: list[dict] = []
+    for page_url in pages:
+        page_url = _canonical_url(page_url)
+        if page_url in seen_pages:
+            continue
+        seen_pages.add(page_url)
+        try:
+            html = _fetch_sync(page_url)
+        except Exception:
+            continue
+        candidates = _page_candidates_from_html(html, page_url, page_url, company, area)
+        for item in candidates:
+            item["source_url"] = page_url
+            item["source_query"] = page_url
+            items.append(item)
+    return items
+
+
+def _area_terms(area: str) -> list[str]:
+    terms = [t.strip() for t in re.split(r"[\/,]+", area or "") if t.strip()]
+    return terms or ([area.strip()] if (area or "").strip() else [])
+
+
+def _build_area_queries(companies: list[dict], area: str) -> list[str]:
+    """Monta as buscas p/ descobrir INCORPORADORAS e IMOBILIÁRIAS da área (não imóveis)."""
+    terms = _area_terms(area)
+    queries: list[str] = []
+    for term in terms:
+        queries.append(f"incorporadora {term} São Paulo")
+        queries.append(f"construtora {term} São Paulo")
+        queries.append(f"imobiliária {term} São Paulo")
+    # dedup preservando a ordem
+    visto = set()
+    out = []
+    for q in queries:
+        q = q.strip()
+        if q and q not in visto:
+            visto.add(q)
+            out.append(q)
+    return out
+
+
+def _candidate_from_search_hit(hit: dict, area: str, query: str = "") -> Optional[dict]:
+    """Cria um item leve direto do resultado de busca (quando a página não abre/parseia)."""
+    url = hit.get("url", "")
+    title = clean_text(hit.get("title", ""))
+    snippet = clean_text(hit.get("snippet", ""))
+    if not url or not title:
+        return None
+    text = f"{title} {snippet}"
+    item = {
+        "empresa_id": None,
+        "area": area,
+        "tipo": _infer_kind(text),
+        "nome": title[:255],
+        "subtitulo": snippet[:255] or None,
+        "bairro": None,
+        "municipio": "São Paulo" if "são paulo" in text.lower() else None,
+        "uf": "SP",
+        "endereco": _extract_address(text, area),
+        "valor_venda": _extract_price(text),
+        "valor_locacao": None,
+        "dormitorios": _extract_number(text, (r"(\d+)\s*dorm", r"(\d+)\s*quartos?")),
+        "suites": _extract_number(text, (r"(\d+)\s*sui", r"(\d+)\s*suí")),
+        "vagas": _extract_number(text, (r"(\d+)\s*vagas?",)),
+        "area_privativa": _extract_area_m2(text),
+        "status": "capturado",
+        "empreendimento": title[:255] if _infer_kind(text) == "empreendimento" else None,
+        "url": _canonical_url(url),
+        "fonte": _domain(url) or url,
+        "dados": {"title": title, "snippet": snippet, "query": query},
+    }
+    item["score"] = _item_score(item)
+    return item
+
+
+def scan_market_sync(
+    companies: list[dict],
+    area: str,
+    include_company_projects: bool = True,
+    include_area_listings: bool = True,
+    limit: int = 60,
+) -> dict:
+    saved_items: list[dict] = []
+    seen = set()
+    discovered_domains = Counter()
+
+    def _consume(items: list[dict]) -> bool:
+        """Adiciona itens (dedup) e devolve True quando atingiu o limite."""
+        for item in items:
+            sig = _item_signature(item)
+            if sig in seen:
+                continue
+            seen.add(sig)
+            item.setdefault("score", _item_score(item))
+            saved_items.append(item)
+            if len(saved_items) >= limit:
+                return True
+        return False
+
+    # 1) Rastreia os sites das construtoras (oficial/descoberto)
+    if include_company_projects:
+        for company in companies:
+            if len(saved_items) >= limit:
+                break
+            site = company.get("website") or _discover_official_site(company.get("nome", ""))
+            if not site:
+                continue
+            if not site.startswith("http"):
+                site = f"https://{site}"
+            discovered_domains[_domain(site)] += 1
+            if _consume(_crawl_site_for_items(site, company, area, include_area_listings)):
+                break
+
+    # 2) Busca na web por anúncios/empreendimentos da área (via Brave)
+    if include_area_listings and len(saved_items) < limit and _has_search_provider():
+        for query in _build_area_queries(companies, area):
+            if len(saved_items) >= limit:
+                break
+            for hit in _web_search(query, limit=6):
+                if len(saved_items) >= limit:
+                    break
+                url = hit.get("url", "")
+                if not url or _looks_blocked(url):
+                    continue
+                discovered_domains[_domain(url)] += 1
+                candidates: list[dict] = []
+                try:
+                    html = _fetch_sync(url)
+                    candidates = _page_candidates_from_html(html, url, query, None, area)
+                    for it in candidates:
+                        it["source_url"] = url
+                        it["source_query"] = query
+                except Exception:
+                    candidates = []
+                if not candidates:
+                    light = _candidate_from_search_hit(hit, area, query)
+                    if light:
+                        candidates = [light]
+                if _consume(candidates):
+                    break
+
+    summary = Counter([item.get("tipo", "outro") for item in saved_items])
+    return {
+        "items": saved_items,
+        "summary": dict(summary),
+        "sources": dict(discovered_domains),
+        "total": len(saved_items),
+    }
+
+
+async def scan_market(
+    companies: list[dict],
+    area: str,
+    include_company_projects: bool = True,
+    include_area_listings: bool = True,
+    limit: int = 60,
+) -> dict:
+    return await asyncio.to_thread(
+        scan_market_sync,
+        companies,
+        area,
+        include_company_projects,
+        include_area_listings,
+        limit,
+    )

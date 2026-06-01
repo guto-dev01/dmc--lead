@@ -1,0 +1,28 @@
+# Segredos — NUNCA suba para o GitHub
+.env
+.env.*
+!.env.example
+backend/.env
+frontend/.env
+
+# Dependências e builds
+node_modules/
+.next/
+frontend/.next/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Docker / certificados locais
+docker/ssl/
+*.pem
+*.key
+*.crt
+
+# Sistema
+.DS_Store
+*.log
+
+# pasta criada por engano (brace expansion)
+{backend/
