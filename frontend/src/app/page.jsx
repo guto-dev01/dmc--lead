@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import DMCPlatform, { DMC_NAV } from "./dmc/DMCPlatform";
 
 const API =
@@ -9,6 +9,7 @@ const API =
   "http://localhost:8001";
 
 const TOKEN_KEY = "imobpro_token";
+const PAGE_KEY = "imobpro_page";
 
 const getStoredToken = () => {
   if (typeof window === "undefined") return "";
@@ -19,6 +20,33 @@ const setStoredToken = (token) => {
   if (typeof window === "undefined") return;
   if (token) window.localStorage.setItem(TOKEN_KEY, token);
   else window.localStorage.removeItem(TOKEN_KEY);
+};
+
+const getStoredPage = () => {
+  if (typeof window === "undefined") return "";
+  return window.localStorage.getItem(PAGE_KEY) || "";
+};
+
+const setStoredPage = (page) => {
+  if (typeof window === "undefined") return;
+  if (page) window.localStorage.setItem(PAGE_KEY, page);
+  else window.localStorage.removeItem(PAGE_KEY);
+};
+
+const isValidPage = (value) => {
+  const basePages = new Set([
+    "dashboard",
+    "empresas",
+    "decisores",
+    "clientes",
+    "mercado",
+    "campanhas",
+    "templates",
+    "conversas",
+    "whatsapp",
+  ]);
+  if (basePages.has(value)) return true;
+  return typeof value === "string" && value.startsWith("dmc:");
 };
 
 const api = async (path, opts = {}) => {
@@ -54,6 +82,8 @@ const Icon = ({ name, size = 18 }) => {
     send: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></svg>,
     refresh: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>,
     plus: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>,
+    trash: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>,
+    edit: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>,
     x: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
     check: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><polyline points="20 6 9 17 4 12"/></svg>,
     info: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>,
@@ -65,6 +95,12 @@ const Icon = ({ name, size = 18 }) => {
     home: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>,
     phone: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 8.2a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.44 0h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 7.91a16 16 0 0 0 6.09 6.09l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>,
     lock: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>,
+    server: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01"/><path d="M7 17h.01"/></svg>,
+    database: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/><path d="M4 17v2c0 1.7 3.6 3 8 3s8-1.3 8-3v-2"/></svg>,
+    users: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M17 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>,
+    pulse: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>,
+    layers: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><polygon points="12 2 3 7 12 12 21 7 12 2"/><polyline points="3 12 12 17 21 12"/><polyline points="3 17 12 22 21 17"/></svg>,
+    spark: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12 2l1.9 5.8H20l-4.8 3.5 1.8 5.7L12 13.9 6.9 17l1.8-5.7L4 7.8h6.1z"/></svg>,
   };
   return icons[name] || null;
 };
@@ -132,63 +168,198 @@ const Modal = ({ open, onClose, title, children }) => {
   );
 };
 
-const LoginScreen = ({ username, password, setUsername, setPassword, onSubmit, loading, error }) => (
-  <div className="min-h-screen flex items-center justify-center p-6 bg-[radial-gradient(circle_at_top,_rgba(0,231,252,0.12),_transparent_34%),radial-gradient(circle_at_bottom_right,_rgba(0,255,77,0.12),_transparent_28%),linear-gradient(180deg,#020608_0%,#071418_100%)]">
-    <div className="w-full max-w-md rounded-[28px] border border-white/8 bg-[#061215]/90 shadow-[0_30px_120px_rgba(0,0,0,0.55)] overflow-hidden backdrop-blur-xl">
-      <div className="p-8 border-b border-white/5">
-        <div className="flex items-center gap-3 mb-6">
-          <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-[#00e7fc] to-[#00ff4d] flex items-center justify-center text-[#06262b] shadow-[0_0_24px_rgba(0,231,252,0.35)]">
-            <Icon name="lock" size={20} />
-          </div>
-          <div>
-            <h1 className="text-[#00ff6a] font-extrabold tracking-[0.35em] text-sm leading-none">IMOBPRO</h1>
-            <p className="text-slate-500 text-xs mt-1">Acesso restrito ao sistema</p>
-          </div>
-        </div>
-        <h2 className="text-white text-2xl font-semibold">Entrar no painel</h2>
-        <p className="text-slate-400 text-sm mt-2">Use seu usuário e senha para acessar as empresas, mercado e WhatsApp.</p>
+const LOGIN_TRUST = [
+  { icon: "lock", title: "Segurança de ponta", desc: "Acesso protegido por token" },
+  { icon: "database", title: "Dados protegidos", desc: "Conformidade LGPD" },
+  { icon: "pulse", title: "Disponibilidade 99,9%", desc: "Infraestrutura de alta disponibilidade" },
+];
+
+const LoginScreen = ({ username, password, setUsername, setPassword, onSubmit, loading, error }) => {
+  const [showPassword, setShowPassword] = useState(false);
+  const anoAtual = new Date().getFullYear();
+
+  return (
+    <section
+      className="relative min-h-screen w-full flex items-center justify-center overflow-hidden isolate p-[clamp(1rem,3.5vw,2.5rem)]"
+      style={{
+        background:
+          "radial-gradient(ellipse 70% 50% at 75% 25%, rgba(0,231,252,0.12), transparent 60%)," +
+          "radial-gradient(ellipse 60% 45% at 18% 85%, rgba(0,255,106,0.08), transparent 60%)," +
+          "linear-gradient(180deg, #0a1418 0%, #04090b 100%)",
+      }}
+    >
+      {/* Background ambiente */}
+      <div className="pointer-events-none absolute inset-0 z-0" aria-hidden="true">
+        <div
+          className="absolute inset-0"
+          style={{
+            backgroundImage:
+              "linear-gradient(to right, rgba(255,255,255,0.018) 1px, transparent 1px)," +
+              "linear-gradient(to bottom, rgba(255,255,255,0.018) 1px, transparent 1px)",
+            backgroundSize: "64px 64px",
+            maskImage: "radial-gradient(ellipse 60% 65% at center, black 20%, transparent 80%)",
+            WebkitMaskImage: "radial-gradient(ellipse 60% 65% at center, black 20%, transparent 80%)",
+          }}
+        />
+        <div
+          className="absolute rounded-full blur-[90px] opacity-55 animate-pulse"
+          style={{
+            top: "-15%", right: "-10%", width: 600, height: 600,
+            background: "radial-gradient(circle, rgba(0,231,252,0.30), transparent 65%)",
+          }}
+        />
+        <div
+          className="absolute rounded-full blur-[90px] opacity-55"
+          style={{
+            bottom: "-20%", left: "-12%", width: 520, height: 520,
+            background: "radial-gradient(circle, rgba(0,255,106,0.16), transparent 60%)",
+          }}
+        />
+        <div
+          className="absolute inset-0"
+          style={{ background: "radial-gradient(ellipse 90% 80% at center, transparent 50%, rgba(0,0,0,0.35) 100%)" }}
+        />
       </div>
-      <form onSubmit={onSubmit} className="p-8 space-y-4">
-        <div>
-          <label className="text-slate-400 text-sm block mb-1.5">Usuário</label>
-          <input
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            autoComplete="username"
-            className="w-full tech-input rounded-xl px-4 py-3 text-white text-sm"
-            placeholder="admin"
-          />
-        </div>
-        <div>
-          <label className="text-slate-400 text-sm block mb-1.5">Senha</label>
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoComplete="current-password"
-            className="w-full tech-input rounded-xl px-4 py-3 text-white text-sm"
-            placeholder="••••••••"
-          />
-        </div>
-        {error && (
-          <div className="rounded-xl border border-rose-500/25 bg-rose-500/10 px-4 py-3 text-rose-200 text-sm">
-            {error}
+
+      <div className="relative z-10 w-full max-w-[1100px] grid items-center gap-[clamp(2rem,4vw,3.75rem)] grid-cols-1 lg:grid-cols-[1fr_0.9fr]">
+        {/* ───── Coluna esquerda · Marca ───── */}
+        <aside className="hidden lg:flex flex-col">
+          <div className="flex flex-col gap-9">
+            <div className="flex items-center gap-4">
+              <div className="w-16 h-16 rounded-3xl bg-gradient-to-br from-[#00e7fc] to-[#00ff4d] flex items-center justify-center text-[#06262b] shadow-[0_0_40px_rgba(0,231,252,0.4)]">
+                <Icon name="building" size={28} />
+              </div>
+              <h1 className="text-[#00ff6a] font-extrabold tracking-[0.35em] text-2xl leading-none">IMOBPRO</h1>
+            </div>
+
+            <div className="flex flex-col gap-3">
+              <span className="inline-flex items-center gap-2 text-[0.72rem] font-semibold uppercase tracking-[0.22em] text-[#00e7fc] w-fit">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#00e7fc] shadow-[0_0_12px_rgba(0,231,252,0.6)] animate-pulse" />
+                Plataforma de prospecção inteligente
+              </span>
+              <h2 className="text-[clamp(2.5rem,4.5vw,3.4rem)] font-bold leading-[0.95] tracking-tight text-gradient">
+                ImobPro
+              </h2>
+              <p className="text-base leading-relaxed text-slate-300 max-w-[36ch]">
+                Inteligência aplicada à prospecção imobiliária: empresas, mercado, decisores e WhatsApp num só lugar.
+              </p>
+            </div>
+
+            <ul className="list-none p-0 m-0 flex flex-col border-t border-white/8 pt-2">
+              {LOGIN_TRUST.map((t) => (
+                <li key={t.title} className="group flex items-center gap-4 py-3.5 border-b border-white/8 last:border-b-0">
+                  <span className="flex-shrink-0 w-9 h-9 grid place-items-center rounded-[10px] bg-[#00e7fc]/[0.06] text-[#00e7fc] shadow-[inset_0_0_0_1px_rgba(0,231,252,0.12)] transition-colors group-hover:bg-[#00e7fc]/15">
+                    <Icon name={t.icon} size={16} />
+                  </span>
+                  <div className="flex flex-col gap-0.5 leading-tight">
+                    <strong className="text-sm font-semibold text-white">{t.title}</strong>
+                    <span className="text-xs text-slate-400">{t.desc}</span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+
+            <footer className="flex items-center gap-2 text-xs text-slate-500">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#00ff6a] animate-pulse" />
+              © {anoAtual} Complexo DMC · Todos os direitos reservados
+            </footer>
           </div>
-        )}
-        <button
-          type="submit"
-          disabled={loading}
-          className="w-full py-3 rounded-xl bg-gradient-to-r from-[#00e7fc] to-[#00ff4d] !text-[#06262b] font-bold disabled:opacity-50"
-        >
-          {loading ? "Entrando..." : "Acessar sistema"}
-        </button>
-        <p className="text-[11px] text-slate-500 text-center">
-          Configure as credenciais em <span className="text-slate-300">ADMIN_USERNAME</span> e <span className="text-slate-300">ADMIN_PASSWORD</span>.
-        </p>
-      </form>
-    </div>
-  </div>
-);
+        </aside>
+
+        {/* ───── Coluna direita · Card login ───── */}
+        <main className="relative w-full max-w-[440px] mx-auto lg:ml-auto lg:mr-0 overflow-hidden flex flex-col gap-5 rounded-[22px] p-[clamp(1.75rem,3.5vw,2.5rem)] border border-white/[0.07] backdrop-blur-2xl bg-[#0d181c]/[0.78] shadow-[0_24px_70px_-24px_rgba(0,0,0,0.7),0_8px_32px_-12px_rgba(0,231,252,0.15)]">
+          <div
+            className="pointer-events-none absolute top-0 left-[15%] right-[15%] h-px"
+            style={{ background: "linear-gradient(90deg, transparent 0%, rgba(0,231,252,0.5) 50%, transparent 100%)" }}
+          />
+
+          <header className="flex flex-col gap-2">
+            <span className="inline-flex items-center gap-1.5 w-fit px-2.5 py-1.5 mb-1 rounded-full bg-[#00e7fc]/[0.08] border border-[#00e7fc]/20 text-[#00e7fc] text-[0.7rem] font-semibold uppercase tracking-[0.1em]">
+              <Icon name="lock" size={12} /> Conexão segura
+            </span>
+            <h2 className="text-[1.55rem] font-semibold tracking-tight text-white leading-tight">Bem-vindo de volta</h2>
+            <p className="text-sm text-slate-400">Acesse sua conta para continuar.</p>
+          </header>
+
+          {error && (
+            <div className="flex items-start gap-2.5 px-4 py-3 rounded-xl bg-rose-500/[0.08] border border-rose-500/25 text-rose-300 text-sm leading-snug" role="alert">
+              <span className="shrink-0 mt-0.5"><Icon name="info" size={16} /></span>
+              <span>{error}</span>
+            </div>
+          )}
+
+          <form onSubmit={onSubmit} className="flex flex-col gap-4" noValidate>
+            {/* Usuário */}
+            <div className="flex flex-col gap-2">
+              <label htmlFor="login-user" className="text-[0.8rem] font-medium text-slate-300">Usuário</label>
+              <div className="relative flex items-center">
+                <span className="absolute left-4 text-slate-500 pointer-events-none"><Icon name="users" size={16} /></span>
+                <input
+                  id="login-user"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  autoComplete="username"
+                  className="w-full h-[54px] pl-11 pr-4 rounded-xl tech-input text-[0.95rem]"
+                  placeholder="admin"
+                  required
+                />
+              </div>
+            </div>
+
+            {/* Senha */}
+            <div className="flex flex-col gap-2">
+              <label htmlFor="login-pass" className="text-[0.8rem] font-medium text-slate-300">Senha</label>
+              <div className="relative flex items-center">
+                <span className="absolute left-4 text-slate-500 pointer-events-none"><Icon name="lock" size={16} /></span>
+                <input
+                  id="login-pass"
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="current-password"
+                  className="w-full h-[54px] pl-11 pr-12 rounded-xl tech-input text-[0.95rem]"
+                  placeholder="••••••••"
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((v) => !v)}
+                  aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}
+                  tabIndex={-1}
+                  className="absolute right-2 w-9 h-9 grid place-items-center rounded-lg text-slate-500 hover:text-slate-200 hover:bg-white/5 transition-colors"
+                >
+                  {showPassword ? "🙈" : "👁"}
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="relative w-full h-[54px] inline-flex items-center justify-center gap-2 rounded-xl tech-button text-[0.95rem] disabled:opacity-55 disabled:cursor-not-allowed"
+            >
+              {loading ? (
+                <>
+                  <span className="w-4 h-4 rounded-full border-2 border-[#06262b]/40 border-t-[#06262b] animate-spin" />
+                  Entrando...
+                </>
+              ) : (
+                <>
+                  Entrar
+                  <Icon name="send" size={16} />
+                </>
+              )}
+            </button>
+          </form>
+
+          <p className="text-[11px] text-slate-500 text-center">
+            Configure as credenciais em <span className="text-slate-300">ADMIN_USERNAME</span> e <span className="text-slate-300">ADMIN_PASSWORD</span>.
+          </p>
+        </main>
+      </div>
+    </section>
+  );
+};
 
 // ---- STAT CARD ----
 const StatCard = ({ label, value, icon, accent = "#00e7fc", sub }) => (
@@ -250,10 +421,16 @@ const EmpresaCard = ({ empresa, onSelect }) => (
 
 // ---- EMPRESA DETAIL MODAL ----
 const EmpresaModal = ({ empresa, templates = [], onClose, onRefreshCNPJ, onEmpresaUpdated, onSendWA }) => {
-  const [numero, setNumero] = useState(empresa.whatsapp || empresa.telefone || "");
+  const [numeros, setNumeros] = useState([empresa.whatsapp || empresa.telefone || ""]);
+  const numerosValidos = numeros.map(n => (n || "").trim()).filter(Boolean);
+  const setNumeroAt = (i, v) => setNumeros(arr => arr.map((n, idx) => (idx === i ? v : n)));
+  const addNumero = () => setNumeros(arr => [...arr, ""]);
+  const removeNumero = (i) => setNumeros(arr => (arr.length <= 1 ? [""] : arr.filter((_, idx) => idx !== i)));
   const [msg, setMsg] = useState("");
   const [loading, setLoading] = useState(false);
   const [discoveringWhatsApp, setDiscoveringWhatsApp] = useState(false);
+  const [discoveringEmail, setDiscoveringEmail] = useState(false);
+  const [emailInfo, setEmailInfo] = useState(null);
   const [cnpjInput, setCnpjInput] = useState(empresa.cnpj || "");
   const [cnpjData, setCnpjData] = useState(null);
   const [tab, setTab] = useState("info");
@@ -338,7 +515,12 @@ const EmpresaModal = ({ empresa, templates = [], onClose, onRefreshCNPJ, onEmpre
       const data = await api(`/api/empresas/${empresa.id}/discover-whatsapp`, { method: "POST" });
       const novoNumero = data?.whatsapp || data?.empresa?.whatsapp || "";
       if (!novoNumero) throw new Error("nenhum WhatsApp encontrado");
-      setNumero(novoNumero);
+      setNumeros(arr => {
+        if (arr.map(n => (n || "").trim()).includes(novoNumero.trim())) return arr;
+        const i = arr.findIndex(n => !(n || "").trim());
+        if (i === -1) return [...arr, novoNumero];
+        return arr.map((n, idx) => (idx === i ? novoNumero : n));
+      });
       setWhatsappFonte(data?.fonte_whatsapp || "");
       onEmpresaUpdated?.(data?.empresa || { ...empresa, whatsapp: novoNumero });
       onRefreshCNPJ?.();
@@ -350,16 +532,47 @@ const EmpresaModal = ({ empresa, templates = [], onClose, onRefreshCNPJ, onEmpre
     }
   };
 
+  const handleDiscoverEmail = async () => {
+    setDiscoveringEmail(true);
+    try {
+      const data = await api(`/api/empresas/${empresa.id}/discover-email`, { method: "POST" });
+      setEmailInfo(data);
+      if (data?.empresa) onEmpresaUpdated?.(data.empresa);
+      onRefreshCNPJ?.();
+      const donos = (data?.donos || []).length;
+      alert(
+        `E-mail da empresa: ${data?.email_empresa || "não definido"}.` +
+        (donos ? ` ${donos} e-mail(s) de dono(s) salvos como contato.` : "")
+      );
+    } catch (e) {
+      alert("Erro ao buscar e-mails: " + e.message);
+    } finally {
+      setDiscoveringEmail(false);
+    }
+  };
+
   const handleSendWA = async () => {
-    if (!numero || !msg) return;
+    if (!numerosValidos.length || !msg) return;
     setLoading(true);
     try {
-      await api("/api/whatsapp/enviar", {
-        method: "POST",
-        body: JSON.stringify({ empresa_id: empresa.id, numero, mensagem: msg }),
-      });
-      alert("✅ Mensagem enviada!");
-      setMsg("");
+      const erros = [];
+      for (const numero of numerosValidos) {
+        try {
+          await api("/api/whatsapp/enviar", {
+            method: "POST",
+            body: JSON.stringify({ empresa_id: empresa.id, numero, mensagem: msg }),
+          });
+        } catch (e) {
+          erros.push(`${numero}: ${e.message}`);
+        }
+      }
+      const enviados = numerosValidos.length - erros.length;
+      if (erros.length) {
+        alert(`Enviado para ${enviados}/${numerosValidos.length} número(s).\nFalhas:\n${erros.join("\n")}`);
+      } else {
+        alert(`✅ Mensagem enviada para ${enviados} número(s)!`);
+        setMsg("");
+      }
     } catch (e) {
       alert("Erro ao enviar: " + e.message);
     } finally {
@@ -447,6 +660,40 @@ const EmpresaModal = ({ empresa, templates = [], onClose, onRefreshCNPJ, onEmpre
               <p className="text-slate-400 text-xs">{empresa.observacoes}</p>
             </div>
           )}
+
+          {/* Captação de e-mails (empresa + donos) */}
+          <div className="mt-3 p-3 rounded-xl border border-[#00e7fc]/15 bg-white/5 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <p className="text-white text-sm font-medium">Buscar e-mails no site</p>
+                <p className="text-slate-500 text-xs">Pega o e-mail da empresa e tenta casar e-mails com os donos (QSA).</p>
+              </div>
+              <button onClick={handleDiscoverEmail} disabled={discoveringEmail}
+                className="shrink-0 px-3 py-2 rounded-xl text-sm font-medium border border-sky-400/40 text-sky-300 hover:bg-sky-400/10 disabled:opacity-60 transition-colors flex items-center gap-2">
+                <Icon name="mail" size={15} /> {discoveringEmail ? "Buscando…" : "Buscar"}
+              </button>
+            </div>
+            {emailInfo && (
+              <div className="space-y-1.5 pt-1">
+                {emailInfo.email_empresa && (
+                  <p className="text-xs text-slate-300"><span className="text-slate-500">Empresa:</span> {emailInfo.email_empresa}</p>
+                )}
+                {(emailInfo.donos || []).map((d, i) => (
+                  <p key={i} className="text-xs text-emerald-300"><span className="text-slate-500">{d.qualificacao || "Dono"} · {d.nome}:</span> {d.email}</p>
+                ))}
+                {(emailInfo.emails || []).length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 pt-1">
+                    {emailInfo.emails.map((e, i) => (
+                      <span key={i} className="text-[11px] px-2 py-0.5 rounded-full border border-white/10 text-slate-400">{e}</span>
+                    ))}
+                  </div>
+                )}
+                {(emailInfo.emails || []).length === 0 && (
+                  <p className="text-xs text-slate-500">Nenhum e-mail encontrado.</p>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -572,15 +819,36 @@ const EmpresaModal = ({ empresa, templates = [], onClose, onRefreshCNPJ, onEmpre
           )}
 
           <div>
-            <label className="text-slate-400 text-sm block mb-1.5">Número WhatsApp</label>
-            <input
-              value={numero}
-              onChange={e => setNumero(e.target.value)}
-              placeholder="(11) 99999-9999"
-              className="w-full bg-white/5 border border-[#00e7fc]/15 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-emerald-500"
-            />
+            <label className="text-slate-400 text-sm block mb-1.5">Números WhatsApp</label>
+            <div className="space-y-2">
+              {numeros.map((n, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <input
+                    value={n}
+                    onChange={e => setNumeroAt(i, e.target.value)}
+                    placeholder="(11) 99999-9999"
+                    className="flex-1 bg-white/5 border border-[#00e7fc]/15 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-emerald-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeNumero(i)}
+                    title="Descartar número"
+                    className="shrink-0 w-9 h-9 flex items-center justify-center rounded-xl border border-rose-500/25 text-rose-300 hover:bg-rose-500/10 transition-colors text-lg leading-none"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={addNumero}
+              className="mt-2 text-xs text-[#00e7fc] hover:text-white transition-colors"
+            >
+              + Adicionar outro número
+            </button>
             <p className="text-[11px] text-slate-500 mt-1">
-              Se o número vier do site, ele já entra normalizado para uso no envio.
+              Se o número vier do site, ele já entra normalizado para uso no envio. A mensagem é enviada para todos os números preenchidos.
             </p>
           </div>
           <div>
@@ -593,7 +861,7 @@ const EmpresaModal = ({ empresa, templates = [], onClose, onRefreshCNPJ, onEmpre
               className="w-full bg-white/5 border border-[#00e7fc]/15 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-emerald-500 resize-none"
             />
           </div>
-          <button onClick={handleSendWA} disabled={loading || !numero || !msg}
+          <button onClick={handleSendWA} disabled={loading || !numerosValidos.length || !msg}
             className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 rounded-xl text-white text-sm font-medium disabled:opacity-50 transition-colors flex items-center justify-center gap-2">
             <Icon name="whatsapp" size={16} />
             {loading ? "Enviando..." : "Enviar via WhatsApp"}
@@ -618,10 +886,47 @@ export default function App() {
   const [empresas, setEmpresas] = useState([]);
   const [templates, setTemplates] = useState([]);
   const [campanhas, setCampanhas] = useState([]);
+  const [campanhaTargets, setCampanhaTargets] = useState([]);
+  const [campanhaTargetSearch, setCampanhaTargetSearch] = useState("");
+  const [campanhaSelectedIds, setCampanhaSelectedIds] = useState([]);
+  const [campanhaCanal, setCampanhaCanal] = useState("whatsapp"); // "whatsapp" | "email"
+  const [campanhaFonte, setCampanhaFonte] = useState("empresas"); // "empresas" | "clientes"
+  const [campanhaNome, setCampanhaNome] = useState("");
+  const [campanhaDescricao, setCampanhaDescricao] = useState("");
+  const [campanhaAssunto, setCampanhaAssunto] = useState("");
+  const [campanhaMensagem, setCampanhaMensagem] = useState("");
+  const [campanhaTemplateId, setCampanhaTemplateId] = useState("");
+  const [campanhaMediaUrl, setCampanhaMediaUrl] = useState("");
+  const [campanhaMediaNome, setCampanhaMediaNome] = useState("");
+  const [campanhaMediaMime, setCampanhaMediaMime] = useState("");
+  const [campanhaMediaType, setCampanhaMediaType] = useState("");
+  const [campanhaMediaPreview, setCampanhaMediaPreview] = useState("");
+  const [campanhaEnviando, setCampanhaEnviando] = useState(false);
+  const [campanhaResultado, setCampanhaResultado] = useState(null);
   const [marketItems, setMarketItems] = useState([]);
   const [marketSummary, setMarketSummary] = useState(null);
   const [selectedEmpresa, setSelectedEmpresa] = useState(null);
   const [loading, setLoading] = useState(false);
+  // ---- Decisores ----
+  const [decisores, setDecisores] = useState([]);
+  const [decisoresQuals, setDecisoresQuals] = useState([]);
+  const [decisoresLoading, setDecisoresLoading] = useState(false);
+  const [decBusca, setDecBusca] = useState("");
+  const [decQual, setDecQual] = useState("");
+  const [pesquisaEmpresa, setPesquisaEmpresa] = useState("");
+  const [pesquisaTermo, setPesquisaTermo] = useState("");
+  const [pesquisaResultado, setPesquisaResultado] = useState(null);
+  const [pesquisando, setPesquisando] = useState(false);
+  const [contatoForm, setContatoForm] = useState(null); // objeto = modal aberto
+  const [contatoBusca, setContatoBusca] = useState({}); // { [idx]: {loading, emails, telefones, fontes, tem_provedor} }
+  const [decMassaLoading, setDecMassaLoading] = useState(false);
+  const [decMassaResult, setDecMassaResult] = useState(null);
+  const [decMassaProgress, setDecMassaProgress] = useState(null); // { feito, total }
+  // ---- Clientes ----
+  const [clientes, setClientes] = useState([]);
+  const [clientesLoading, setClientesLoading] = useState(false);
+  const [clienteBusca, setClienteBusca] = useState("");
+  const [clienteSelectedIds, setClienteSelectedIds] = useState([]);
   const [marketLoading, setMarketLoading] = useState(false);
   const [marketScanning, setMarketScanning] = useState(false);
   const [search, setSearch] = useState("");
@@ -633,6 +938,12 @@ export default function App() {
   const [waStatus, setWaStatus] = useState(null);
   const [waQR, setWaQR] = useState(null);
   const [waLoadingQR, setWaLoadingQR] = useState(false);
+  // Contas de WhatsApp (multi-instância)
+  const [waContas, setWaContas] = useState([]);
+  const [waInstance, setWaInstance] = useState("imobpro");
+  const [waContasLoading, setWaContasLoading] = useState(false);
+  const [waNovaConta, setWaNovaConta] = useState("");
+  const [waAddingConta, setWaAddingConta] = useState(false);
   // Inbox / espelho WhatsApp
   const [convList, setConvList] = useState([]);
   const [convActive, setConvActive] = useState(null);
@@ -642,8 +953,11 @@ export default function App() {
   const [convSearch, setConvSearch] = useState("");
   const [newEmpresa, setNewEmpresa] = useState({ nome: "", tipo: "incorporadora", bairro: "", cnpj: "" });
   const [showNewModal, setShowNewModal] = useState(false);
+  const [discoveringAllWA, setDiscoveringAllWA] = useState(false);
+  const [discoveringAllEmail, setDiscoveringAllEmail] = useState(false);
   const [newTemplate, setNewTemplate] = useState({ nome: "", categoria: "", conteudo: "" });
   const [showTemplateModal, setShowTemplateModal] = useState(false);
+  const [editingTemplateId, setEditingTemplateId] = useState(null);
   const [enriching, setEnriching] = useState(false);
 
   useEffect(() => {
@@ -673,7 +987,22 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [campanhaMediaPreview]);
+
+  useEffect(() => {
+    if (!authChecked || !isAuthed) return;
+    const savedPage = getStoredPage();
+    if (savedPage && isValidPage(savedPage)) {
+      setPage(savedPage);
+    } else {
+      setStoredPage(page);
+    }
+  }, [authChecked, isAuthed]);
+
+  useEffect(() => {
+    if (!isAuthed || !isValidPage(page)) return;
+    setStoredPage(page);
+  }, [isAuthed, page]);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -744,6 +1073,162 @@ export default function App() {
     }
   }, [search, filterTipo]);
 
+  const loadDecisores = useCallback(async () => {
+    setDecisoresLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (decBusca) params.set("busca", decBusca);
+      if (decQual) params.set("qualificacao", decQual);
+      const data = await api(`/api/decisores?${params}`);
+      setDecisores(data.items || []);
+      setDecisoresQuals(data.qualificacoes || []);
+    } catch (e) {
+      setDecisores([]);
+    } finally {
+      setDecisoresLoading(false);
+    }
+  }, [decBusca, decQual]);
+
+  const handlePesquisarDecisores = async () => {
+    const alvo = pesquisaEmpresa.trim();
+    if (!alvo) { alert("Informe o nome da empresa para pesquisar."); return; }
+    setPesquisando(true);
+    setPesquisaResultado(null);
+    try {
+      const r = await api("/api/decisores/pesquisar", {
+        method: "POST",
+        body: JSON.stringify({ empresa: alvo, termo: pesquisaTermo.trim() }),
+      });
+      setPesquisaResultado(r);
+    } catch (e) {
+      alert("Erro na pesquisa: " + e.message);
+    } finally {
+      setPesquisando(false);
+    }
+  };
+
+  const handleSalvarContato = async () => {
+    if (!contatoForm?.nome?.trim()) { alert("Informe o nome."); return; }
+    if (!contatoForm?.empresa_id) { alert("Selecione a empresa do contato."); return; }
+    try {
+      await api("/api/decisores/contato", {
+        method: "POST",
+        body: JSON.stringify(contatoForm),
+      });
+      setContatoForm(null);
+      await loadDecisores();
+      alert("Contato salvo.");
+    } catch (e) {
+      alert("Erro ao salvar contato: " + e.message);
+    }
+  };
+
+  const handleBuscarContato = async (idx, d) => {
+    setContatoBusca(prev => ({ ...prev, [idx]: { ...(prev[idx] || {}), loading: true } }));
+    try {
+      const r = await api("/api/decisores/contato/buscar", {
+        method: "POST",
+        body: JSON.stringify({ nome: d.nome, empresa: d.empresa_nome, empresa_id: d.empresa_id, website: d.empresa_website }),
+      });
+      setContatoBusca(prev => ({ ...prev, [idx]: { loading: false, ...r } }));
+    } catch (e) {
+      setContatoBusca(prev => ({ ...prev, [idx]: { loading: false, erro: e.message } }));
+    }
+  };
+
+  const loadClientes = useCallback(async () => {
+    setClientesLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (clienteBusca) params.set("busca", clienteBusca);
+      const data = await api(`/api/decisores/clientes?${params}`);
+      setClientes(data.items || []);
+    } catch (e) {
+      setClientes([]);
+    } finally {
+      setClientesLoading(false);
+    }
+  }, [clienteBusca]);
+
+  const handleBuscarTodosContatos = async () => {
+    if (!decisores.length) { alert("Não há decisores na lista para buscar."); return; }
+    const alvos = decisores
+      .filter(d => d.empresa_id && d.nome)
+      .map(d => ({
+        nome: d.nome,
+        empresa_nome: d.empresa_nome,
+        empresa_id: d.empresa_id,
+        empresa_website: d.empresa_website,
+        qualificacao: d.qualificacao,
+      }));
+    if (!alvos.length) { alert("Nenhum decisor com empresa vinculada para cadastrar."); return; }
+
+    // agrupa por empresa (a busca é 1x por empresa) e envia em lotes de empresas
+    const grupos = {};
+    for (const a of alvos) { (grupos[a.empresa_id] = grupos[a.empresa_id] || []).push(a); }
+    const empresasGrupos = Object.values(grupos);
+    if (!confirm(`Buscar e-mail/telefone de ${alvos.length} decisor(es) de ${empresasGrupos.length} empresa(s) e cadastrar como clientes? Pode levar alguns minutos.`)) return;
+
+    const LOTE = 4; // empresas por requisição (cada requisição leva ~20-30s)
+    setDecMassaLoading(true);
+    setDecMassaResult(null);
+    setDecMassaProgress({ feito: 0, total: empresasGrupos.length });
+    const acc = { total: 0, com_contato: 0, salvos: 0 };
+    try {
+      for (let i = 0; i < empresasGrupos.length; i += LOTE) {
+        const fatia = empresasGrupos.slice(i, i + LOTE).flat();
+        const r = await api("/api/decisores/contato/buscar-massa", {
+          method: "POST",
+          body: JSON.stringify({ alvos: fatia, salvar: true }),
+        });
+        acc.total += r.total || 0;
+        acc.com_contato += r.com_contato || 0;
+        acc.salvos += r.salvos || 0;
+        setDecMassaResult({ ...acc });
+        setDecMassaProgress({ feito: Math.min(i + LOTE, empresasGrupos.length), total: empresasGrupos.length });
+        await loadClientes();
+      }
+      await loadDecisores();
+    } catch (e) {
+      alert("Erro na busca em massa: " + e.message);
+    } finally {
+      setDecMassaLoading(false);
+      setDecMassaProgress(null);
+    }
+  };
+
+  const toggleCliente = (id) => setClienteSelectedIds(prev => (
+    prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+  ));
+
+  const handleExcluirCliente = async (id) => {
+    if (!confirm("Excluir este cliente?")) return;
+    try {
+      await api(`/api/decisores/contato/${id}`, { method: "DELETE" });
+      setClienteSelectedIds(prev => prev.filter(x => x !== id));
+      await loadClientes();
+    } catch (e) {
+      alert("Erro ao excluir: " + e.message);
+    }
+  };
+
+  const enviarClientesParaCampanha = (canal) => {
+    const ids = clienteSelectedIds.length
+      ? clienteSelectedIds
+      : clientes
+          .filter(c => (canal === "email" ? c.email : (c.whatsapp || c.telefone)))
+          .map(c => c.id);
+    if (!ids.length) {
+      alert(canal === "email" ? "Nenhum cliente com e-mail." : "Nenhum cliente com WhatsApp/telefone.");
+      return;
+    }
+    setCampanhaFonte("clientes");
+    setCampanhaCanal(canal);
+    setCampanhaSelectedIds(ids);
+    setCampanhaResultado(null);
+    setPage("campanhas");
+  };
+
   const loadTemplates = useCallback(async () => {
     try {
       const data = await api("/api/templates");
@@ -756,6 +1241,16 @@ export default function App() {
       const data = await api("/api/campanhas");
       setCampanhas(data);
     } catch (e) {}
+  }, []);
+
+  const loadCampaignTargets = useCallback(async () => {
+    try {
+      const data = await api("/api/empresas?limit=200");
+      const items = Array.isArray(data?.items) ? data.items : [];
+      setCampanhaTargets(items.filter(item => item.whatsapp || item.telefone || item.email));
+    } catch (e) {
+      setCampanhaTargets([]);
+    }
   }, []);
 
   const loadMarket = useCallback(async () => {
@@ -781,21 +1276,22 @@ export default function App() {
 
   const checkWA = useCallback(async () => {
     try {
-      const data = await api("/api/whatsapp/status");
+      const data = await api(`/api/whatsapp/status?instance=${encodeURIComponent(waInstance)}`);
       setWaStatus(data);
       return data;
     } catch (e) {
       setWaStatus({ state: "error" });
       return null;
     }
-  }, []);
+  }, [waInstance]);
 
   const loadQR = useCallback(async () => {
     setWaLoadingQR(true);
     try {
+      const qs = `instance=${encodeURIComponent(waInstance)}`;
       // garante que a instância existe antes de pedir o QR
-      await api("/api/whatsapp/instancia", { method: "POST" }).catch(() => {});
-      const data = await api("/api/whatsapp/qrcode");
+      await api(`/api/whatsapp/instancia?${qs}`, { method: "POST" }).catch(() => {});
+      const data = await api(`/api/whatsapp/qrcode?${qs}`);
       const b64 = data?.base64 || data?.qrcode?.base64 || null;
       setWaQR(b64 ? (b64.startsWith("data:") ? b64 : `data:image/png;base64,${b64}`) : null);
     } catch (e) {
@@ -803,7 +1299,56 @@ export default function App() {
     } finally {
       setWaLoadingQR(false);
     }
+  }, [waInstance]);
+
+  const loadContas = useCallback(async () => {
+    setWaContasLoading(true);
+    try {
+      const data = await api("/api/whatsapp/instancias");
+      setWaContas(Array.isArray(data?.items) ? data.items : []);
+    } catch (e) {
+      setWaContas([]);
+    } finally {
+      setWaContasLoading(false);
+    }
   }, []);
+
+  const selecionarConta = useCallback((nome) => {
+    if (!nome || nome === waInstance) return;
+    setWaInstance(nome);
+    setWaQR(null);
+    setWaStatus(null);
+  }, [waInstance]);
+
+  const addConta = useCallback(async () => {
+    const nome = waNovaConta.trim();
+    if (!nome) { alert("Informe um nome para a conta (ex: vendas, suporte)."); return; }
+    setWaAddingConta(true);
+    try {
+      const r = await api("/api/whatsapp/instancias", {
+        method: "POST",
+        body: JSON.stringify({ nome }),
+      });
+      setWaNovaConta("");
+      await loadContas();
+      if (r?.instancia) selecionarConta(r.instancia);
+    } catch (e) {
+      alert("Erro ao criar conta: " + e.message);
+    } finally {
+      setWaAddingConta(false);
+    }
+  }, [waNovaConta, loadContas, selecionarConta]);
+
+  const removeConta = useCallback(async (nome) => {
+    if (!confirm(`Remover a conta de WhatsApp "${nome}"? Isso desconecta o aparelho.`)) return;
+    try {
+      await api(`/api/whatsapp/instancias/${encodeURIComponent(nome)}`, { method: "DELETE" });
+      if (nome === waInstance) selecionarConta("imobpro");
+      await loadContas();
+    } catch (e) {
+      alert("Erro ao remover conta: " + e.message);
+    }
+  }, [waInstance, loadContas, selecionarConta]);
 
   const loadInbox = useCallback(async () => {
     try {
@@ -811,6 +1356,196 @@ export default function App() {
       setConvList(Array.isArray(data) ? data : []);
     } catch (e) {}
   }, []);
+
+  const handleCampanhaTemplate = useCallback((templateId) => {
+    setCampanhaTemplateId(templateId);
+    const tmpl = templates.find(t => String(t.id) === String(templateId));
+    if (tmpl?.conteudo) {
+      setCampanhaMensagem(tmpl.conteudo);
+    }
+  }, [templates]);
+
+  const handleCampanhaMedia = useCallback(async (file) => {
+    if (!file) {
+      if (campanhaMediaPreview.startsWith("blob:")) URL.revokeObjectURL(campanhaMediaPreview);
+      setCampanhaMediaUrl("");
+      setCampanhaMediaNome("");
+      setCampanhaMediaMime("");
+      setCampanhaMediaType("");
+      setCampanhaMediaPreview("");
+      return;
+    }
+    if (!file.type.startsWith("image/") && !file.type.startsWith("video/")) {
+      alert("Selecione apenas uma imagem ou um vídeo.");
+      return;
+    }
+    if (campanhaMediaPreview.startsWith("blob:")) URL.revokeObjectURL(campanhaMediaPreview);
+    const preview = URL.createObjectURL(file);
+    setCampanhaMediaPreview(preview);
+    setCampanhaMediaNome(file.name);
+    setCampanhaMediaMime(file.type || "");
+    setCampanhaMediaType(file.type.startsWith("video/") ? "video" : "image");
+
+    const token = getStoredToken();
+    const form = new FormData();
+    form.append("file", file);
+    const response = await fetch(`${API}/api/campanhas/upload-media`, {
+      method: "POST",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: form,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      URL.revokeObjectURL(preview);
+      setCampanhaMediaPreview("");
+      throw new Error(data?.detail || "Falha ao enviar mídia.");
+    }
+    setCampanhaMediaUrl(data.url || "");
+  }, []);
+
+  const toggleCampanhaTarget = useCallback((id) => {
+    setCampanhaSelectedIds(prev => (
+      prev.includes(id)
+        ? prev.filter(item => item !== id)
+        : [...prev, id]
+    ));
+  }, []);
+
+  // Clientes (contatos) no formato de "alvo de campanha", para reusar a mesma UI
+  const clientesComoTargets = useMemo(() => clientes.map(c => ({
+    id: c.id,
+    nome: c.nome,
+    tipo: c.cargo,
+    email: c.email,
+    telefone: c.telefone,
+    whatsapp: c.whatsapp,
+    bairro: c.empresa_nome,
+  })), [clientes]);
+
+  // Fonte ativa de destinatários da campanha (empresas ou clientes)
+  const campanhaItensFonte = campanhaFonte === "clientes" ? clientesComoTargets : campanhaTargets;
+
+  const selecionarTodosCampanha = useCallback(() => {
+    const ids = campanhaItensFonte
+      .filter(item => (campanhaCanal === "email" ? item.email : (item.whatsapp || item.telefone)))
+      .map(item => String(item.id));
+    setCampanhaSelectedIds(ids);
+  }, [campanhaItensFonte, campanhaCanal]);
+
+  const limparCampanha = useCallback(() => {
+    setCampanhaNome("");
+    setCampanhaDescricao("");
+    setCampanhaAssunto("");
+    setCampanhaMensagem("");
+    setCampanhaTemplateId("");
+    setCampanhaMediaUrl("");
+    setCampanhaMediaNome("");
+    setCampanhaMediaMime("");
+    setCampanhaMediaType("");
+    setCampanhaMediaPreview("");
+    setCampanhaSelectedIds([]);
+    setCampanhaResultado(null);
+  }, []);
+
+  const dispararCampanhaRapida = useCallback(async () => {
+    if (!campanhaSelectedIds.length) {
+      alert("Selecione ao menos um número para disparar.");
+      return;
+    }
+    if (!campanhaMensagem.trim() && !campanhaMediaUrl) {
+      alert("Escreva uma mensagem ou selecione uma mídia para enviar.");
+      return;
+    }
+    setCampanhaEnviando(true);
+    setCampanhaResultado(null);
+    try {
+      const result = await api("/api/campanhas/disparo-rapido", {
+        method: "POST",
+        body: JSON.stringify({
+          nome: campanhaNome.trim() || "Disparo rápido",
+          descricao: campanhaDescricao.trim() || undefined,
+          empresa_ids: campanhaFonte === "clientes" ? [] : campanhaSelectedIds,
+          contato_ids: campanhaFonte === "clientes" ? campanhaSelectedIds : [],
+          mensagem: campanhaMensagem,
+          media_url: campanhaMediaUrl || undefined,
+          media_mimetype: campanhaMediaMime || undefined,
+          media_filename: campanhaMediaNome || undefined,
+          media_type: campanhaMediaType || undefined,
+        }),
+      });
+      setCampanhaResultado(result);
+      await loadCampanhas();
+      await loadCampaignTargets();
+    } catch (e) {
+      alert("Erro ao disparar campanha: " + e.message);
+    } finally {
+      setCampanhaEnviando(false);
+    }
+  }, [
+    campanhaSelectedIds,
+    campanhaMensagem,
+    campanhaMediaUrl,
+    campanhaMediaMime,
+    campanhaMediaNome,
+    campanhaMediaType,
+    campanhaNome,
+    campanhaDescricao,
+    campanhaFonte,
+    loadCampanhas,
+    loadCampaignTargets,
+  ]);
+
+  const dispararCampanhaEmail = useCallback(async () => {
+    if (!campanhaSelectedIds.length) {
+      alert("Selecione ao menos um destinatário para disparar.");
+      return;
+    }
+    if (!campanhaAssunto.trim()) {
+      alert("Informe o assunto do e-mail.");
+      return;
+    }
+    if (!campanhaMensagem.trim()) {
+      alert("Escreva a mensagem do e-mail.");
+      return;
+    }
+    setCampanhaEnviando(true);
+    setCampanhaResultado(null);
+    try {
+      const result = await api("/api/campanhas/disparo-email", {
+        method: "POST",
+        body: JSON.stringify({
+          nome: campanhaNome.trim() || "Disparo de e-mail",
+          descricao: campanhaDescricao.trim() || undefined,
+          empresa_ids: campanhaFonte === "clientes" ? [] : campanhaSelectedIds,
+          contato_ids: campanhaFonte === "clientes" ? campanhaSelectedIds : [],
+          assunto: campanhaAssunto,
+          mensagem: campanhaMensagem,
+          media_url: campanhaMediaUrl || undefined,
+          media_mimetype: campanhaMediaMime || undefined,
+          media_filename: campanhaMediaNome || undefined,
+        }),
+      });
+      setCampanhaResultado(result);
+      await loadCampanhas();
+      await loadCampaignTargets();
+    } catch (e) {
+      alert("Erro ao disparar e-mail: " + e.message);
+    } finally {
+      setCampanhaEnviando(false);
+    }
+  }, [
+    campanhaSelectedIds,
+    campanhaAssunto,
+    campanhaMensagem,
+    campanhaMediaUrl,
+    campanhaMediaMime,
+    campanhaMediaNome,
+    campanhaNome,
+    campanhaDescricao,
+    campanhaFonte,
+    loadCampanhas,
+    loadCampaignTargets,
+  ]);
 
   const loadMsgs = useCallback(async (conversaId) => {
     if (!conversaId) return;
@@ -857,11 +1592,13 @@ export default function App() {
   useEffect(() => {
     if (!isAuthed) return;
     if (page === "empresas") loadEmpresas();
+    if (page === "decisores") loadDecisores();
+    if (page === "clientes") loadClientes();
     if (page === "templates") loadTemplates();
-    if (page === "campanhas") { loadCampanhas(); loadTemplates(); }
+    if (page === "campanhas") { loadCampanhas(); loadTemplates(); loadCampaignTargets(); loadClientes(); }
     if (page === "mercado") loadMarket();
     if (page === "conversas") loadInbox();
-  }, [isAuthed, page, loadEmpresas, loadTemplates, loadCampanhas, loadMarket, loadInbox]);
+  }, [isAuthed, page, loadEmpresas, loadDecisores, loadClientes, loadTemplates, loadCampanhas, loadMarket, loadInbox, loadCampaignTargets]);
 
   // Tela Conversas: atualiza inbox e thread ativa ao vivo (espelho do WhatsApp)
   useEffect(() => {
@@ -881,6 +1618,22 @@ export default function App() {
       return () => clearTimeout(t);
     }
   }, [isAuthed, search, filterTipo, page, loadEmpresas]);
+
+  useEffect(() => {
+    if (!isAuthed) return;
+    if (page === "decisores") {
+      const t = setTimeout(loadDecisores, 350);
+      return () => clearTimeout(t);
+    }
+  }, [isAuthed, decBusca, decQual, page, loadDecisores]);
+
+  useEffect(() => {
+    if (!isAuthed) return;
+    if (page === "clientes") {
+      const t = setTimeout(loadClientes, 350);
+      return () => clearTimeout(t);
+    }
+  }, [isAuthed, clienteBusca, page, loadClientes]);
 
   useEffect(() => {
     if (!isAuthed) return;
@@ -925,6 +1678,7 @@ export default function App() {
     if (!isAuthed) return;
     if (page !== "whatsapp") return;
     let cancel = false;
+    loadContas();
     const tick = async () => {
       const st = await checkWA();
       const connected = st?.state === "open" || st?.instance?.state === "open";
@@ -935,7 +1689,23 @@ export default function App() {
     tick();
     const id = setInterval(tick, 5000);
     return () => { cancel = true; clearInterval(id); };
-  }, [isAuthed, page, checkWA, loadQR, waQR, waLoadingQR]);
+  }, [isAuthed, page, checkWA, loadQR, loadContas, waQR, waLoadingQR]);
+
+  const dashboardStats = stats?.stats || {};
+  const totalEmpresas = Number(dashboardStats.total_empresas || 0);
+  const totalComCnpj = Number(dashboardStats.com_cnpj || 0);
+  const totalComWhats = Number(dashboardStats.com_whatsapp || 0);
+  const totalConversas = Number(dashboardStats.total_conversas || 0);
+  const totalMensagens = Number(dashboardStats.total_mensagens || 0);
+  const msgsHoje = Number(dashboardStats.msgs_hoje || 0);
+  const campanhasAtivas = Number(dashboardStats.campanhas_ativas || 0);
+  const empresasSemWhats = Math.max(totalEmpresas - totalComWhats, 0);
+  const tiposBase = Array.isArray(stats?.por_tipo)
+    ? [...stats.por_tipo].sort((a, b) => Number(b.total || 0) - Number(a.total || 0))
+    : [];
+  const maiorTipo = Math.max(...tiposBase.map(item => Number(item.total || 0)), 1);
+  const empresasRecentes = Array.isArray(stats?.recentes) ? stats.recentes : [];
+  const atividadesRecentes = Array.isArray(stats?.atividades) ? stats.atividades : [];
 
   const handleAddEmpresa = async () => {
     try {
@@ -951,11 +1721,42 @@ export default function App() {
     }
   };
 
-  const handleAddTemplate = async () => {
+  const openNewTemplate = () => {
+    setEditingTemplateId(null);
+    setNewTemplate({ nome: "", categoria: "", conteudo: "" });
+    setShowTemplateModal(true);
+  };
+
+  const openEditTemplate = (t) => {
+    setEditingTemplateId(t.id);
+    setNewTemplate({ nome: t.nome || "", categoria: t.categoria || "", conteudo: t.conteudo || "" });
+    setShowTemplateModal(true);
+  };
+
+  const handleSaveTemplate = async () => {
     try {
-      await api("/api/templates", { method: "POST", body: JSON.stringify(newTemplate) });
+      const variaveis = [...new Set(
+        [...(newTemplate.conteudo || "").matchAll(/\{\{\s*([\w-]+)\s*\}\}/g)].map(m => m[1])
+      )];
+      const payload = JSON.stringify({ ...newTemplate, variaveis });
+      if (editingTemplateId) {
+        await api(`/api/templates/${editingTemplateId}`, { method: "PUT", body: payload });
+      } else {
+        await api("/api/templates", { method: "POST", body: payload });
+      }
       setShowTemplateModal(false);
+      setEditingTemplateId(null);
       setNewTemplate({ nome: "", categoria: "", conteudo: "" });
+      loadTemplates();
+    } catch (e) {
+      alert("Erro: " + e.message);
+    }
+  };
+
+  const handleDeleteTemplate = async (id) => {
+    if (!confirm("Excluir este template?")) return;
+    try {
+      await api(`/api/templates/${id}`, { method: "DELETE" });
       loadTemplates();
     } catch (e) {
       alert("Erro: " + e.message);
@@ -979,6 +1780,48 @@ export default function App() {
       alert("Erro ao enriquecer empresas: " + e.message);
     } finally {
       setEnriching(false);
+    }
+  };
+
+  const handleDiscoverWhatsAppAll = async () => {
+    if (!confirm("Passar o pente fino e buscar o WhatsApp de todas as empresas sem número? Pode levar alguns minutos.")) return;
+    setDiscoveringAllWA(true);
+    try {
+      const r = await api("/api/empresas/discover-whatsapp-all", {
+        method: "POST",
+        body: JSON.stringify({ only_missing: true }),
+      });
+      await loadEmpresas();
+      await loadDashboard();
+      alert(
+        `Pente fino concluído: ${r.encontrados} WhatsApp(s) encontrado(s) de ${r.total} empresa(s) sem número. ` +
+        `${r.nao_encontrados} não localizados.`
+      );
+    } catch (e) {
+      alert("Erro no pente fino de WhatsApp: " + e.message);
+    } finally {
+      setDiscoveringAllWA(false);
+    }
+  };
+
+  const handleDiscoverEmailAll = async () => {
+    if (!confirm("Passar o pente fino e buscar os e-mails (empresa + donos) de todas as empresas sem e-mail? Pode levar alguns minutos.")) return;
+    setDiscoveringAllEmail(true);
+    try {
+      const r = await api("/api/empresas/discover-email-all", {
+        method: "POST",
+        body: JSON.stringify({ only_missing: true }),
+      });
+      await loadEmpresas();
+      await loadDashboard();
+      alert(
+        `Pente fino de e-mails: ${r.emails_empresa} e-mail(s) de empresa e ${r.emails_donos} e-mail(s) de donos encontrados ` +
+        `(de ${r.total} empresa(s)). ${r.nao_encontrados} sem e-mail.`
+      );
+    } catch (e) {
+      alert("Erro no pente fino de e-mails: " + e.message);
+    } finally {
+      setDiscoveringAllEmail(false);
     }
   };
 
@@ -1030,6 +1873,8 @@ export default function App() {
   const navItems = [
     { id: "dashboard", icon: "home", label: "Dashboard" },
     { id: "empresas", icon: "building", label: "Empresas" },
+    { id: "decisores", icon: "users", label: "Decisores" },
+    { id: "clientes", icon: "users", label: "Clientes" },
     { id: "mercado", icon: "map", label: "Mercado" },
     { id: "campanhas", icon: "megaphone", label: "Campanhas" },
     { id: "templates", icon: "file", label: "Templates" },
@@ -1103,7 +1948,7 @@ export default function App() {
       <main className="flex-1 flex flex-col overflow-hidden">
         <div className="h-16 flex-shrink-0 px-8 lg:px-10 flex items-center justify-between border-b border-white/5 bg-black/15 backdrop-blur-sm">
           <div>
-            <h2 className="text-white font-semibold text-sm tracking-wide">{page === "dashboard" ? "Dashboard" : page === "empresas" ? "Empresas" : page === "mercado" ? "Mercado" : page === "campanhas" ? "Campanhas" : page === "templates" ? "Templates" : page === "conversas" ? "Conversas" : page === "whatsapp" ? "WhatsApp" : "Complexo DMC"}</h2>
+            <h2 className="text-white font-semibold text-sm tracking-wide">{page === "dashboard" ? "Dashboard" : page === "empresas" ? "Empresas" : page === "decisores" ? "Decisores" : page === "clientes" ? "Clientes" : page === "mercado" ? "Mercado" : page === "campanhas" ? "Campanhas" : page === "templates" ? "Templates" : page === "conversas" ? "Conversas" : page === "whatsapp" ? "WhatsApp" : "Complexo DMC"}</h2>
             <p className="text-slate-500 text-xs">Sistema autenticado</p>
           </div>
           <div className="flex items-center gap-3">
@@ -1127,16 +1972,17 @@ export default function App() {
           {/* COMPLEXO DMC — seções nativas (mesmo tema do ImobPro) */}
           {page.startsWith("dmc:") && <DMCPlatform secaoControlada={page.slice(4)} />}
 
-          {/* CONVERSAS (espelho do WhatsApp) */}
+          {/* CONVERSAS (espelho do WhatsApp — tema claro estilo WhatsApp Web) */}
           {page === "conversas" && (
-            <div className="flex gap-4 h-[calc(100vh-180px)]">
+            <div className="flex h-[calc(100vh-180px)] rounded-2xl overflow-hidden border border-[#d1d7db] shadow-lg">
               {/* Lista de conversas */}
-              <div className="w-80 flex-shrink-0 surface-strong rounded-2xl flex flex-col overflow-hidden">
-                <div className="p-3 border-b border-white/5">
+              <div className="w-80 flex-shrink-0 bg-white flex flex-col overflow-hidden border-r border-[#e9edef]">
+                <div className="p-2.5 bg-[#f0f2f5] border-b border-[#e9edef]">
                   <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500"><Icon name="search" size={14} /></span>
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#54656f]"><Icon name="search" size={14} /></span>
                     <input value={convSearch} onChange={e => setConvSearch(e.target.value)}
-                      placeholder="Buscar conversa..." className="tech-input w-full rounded-full pl-9 pr-3 py-2 text-sm" />
+                      placeholder="Buscar conversa..."
+                      className="w-full rounded-lg pl-9 pr-3 py-2 text-sm bg-white text-[#111b21] placeholder-[#667781] border border-transparent focus:border-[#00a884] focus:outline-none" />
                   </div>
                 </div>
                 <div className="flex-1 overflow-y-auto">
@@ -1145,19 +1991,19 @@ export default function App() {
                     return !q || (c.nome_exibicao || "").toLowerCase().includes(q) || (c.numero_whatsapp || "").includes(q);
                   }).map(c => (
                     <button key={c.id} onClick={() => openConversa(c)}
-                      className={`w-full text-left px-4 py-3 border-b border-white/5 hover:bg-white/5 transition-colors ${convActive?.id === c.id ? "bg-white/8" : ""}`}>
+                      className={`w-full text-left px-3 py-3 border-b border-[#f0f2f5] hover:bg-[#f5f6f6] transition-colors ${convActive?.id === c.id ? "bg-[#f0f2f5]" : ""}`}>
                       <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-full bg-emerald-500/20 text-emerald-300 flex items-center justify-center flex-shrink-0">
-                          <Icon name="whatsapp" size={18} />
+                        <div className="w-12 h-12 rounded-full bg-[#dfe5e7] text-[#00a884] flex items-center justify-center flex-shrink-0">
+                          <Icon name="whatsapp" size={22} />
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center justify-between gap-2">
-                            <span className="text-white text-sm font-medium truncate">{c.nome_exibicao || c.numero_whatsapp}</span>
+                            <span className="text-[#111b21] text-[15px] font-medium truncate">{c.nome_exibicao || c.numero_whatsapp}</span>
                             {c.nao_lidas > 0 && (
-                              <span className="bg-emerald-500 text-[#052226] text-[10px] font-bold rounded-full px-1.5 py-0.5 min-w-[18px] text-center">{c.nao_lidas}</span>
+                              <span className="bg-[#25d366] text-white text-[11px] font-bold rounded-full px-1.5 py-0.5 min-w-[18px] text-center">{c.nao_lidas}</span>
                             )}
                           </div>
-                          <p className="text-slate-400 text-xs truncate">
+                          <p className="text-[#667781] text-[13px] truncate">
                             {c.ultima_direcao === "outbound" ? "Você: " : ""}{c.ultima_mensagem || "—"}
                           </p>
                         </div>
@@ -1165,47 +2011,48 @@ export default function App() {
                     </button>
                   ))}
                   {convList.length === 0 && (
-                    <div className="p-6 text-center text-slate-500 text-sm">Nenhuma conversa ainda.<br />Elas aparecem aqui quando o robô envia ou recebe mensagens.</div>
+                    <div className="p-6 text-center text-[#667781] text-sm">Nenhuma conversa ainda.<br />Elas aparecem aqui quando o robô envia ou recebe mensagens.</div>
                   )}
                 </div>
               </div>
 
               {/* Thread de mensagens */}
-              <div className="flex-1 surface-strong rounded-2xl flex flex-col overflow-hidden">
+              <div className="flex-1 flex flex-col overflow-hidden bg-[#efeae2]">
                 {convActive ? (
                   <>
-                    <div className="px-5 py-3 border-b border-white/5 flex items-center gap-3">
-                      <div className="w-9 h-9 rounded-full bg-emerald-500/20 text-emerald-300 flex items-center justify-center"><Icon name="whatsapp" size={16} /></div>
+                    <div className="px-4 py-2.5 bg-[#f0f2f5] border-b border-[#e9edef] flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-full bg-[#dfe5e7] text-[#00a884] flex items-center justify-center"><Icon name="whatsapp" size={18} /></div>
                       <div className="min-w-0">
-                        <div className="text-white text-sm font-semibold truncate">{convActive.nome_exibicao || convActive.numero_whatsapp}</div>
-                        <div className="text-slate-500 text-xs truncate">+{convActive.numero_whatsapp}{convActive.empresa_nome ? ` · ${convActive.empresa_nome}` : ""}</div>
+                        <div className="text-[#111b21] text-[16px] font-medium truncate">{convActive.nome_exibicao || convActive.numero_whatsapp}</div>
+                        <div className="text-[#667781] text-xs truncate">+{convActive.numero_whatsapp}{convActive.empresa_nome ? ` · ${convActive.empresa_nome}` : ""}</div>
                       </div>
                     </div>
-                    <div className="flex-1 overflow-y-auto p-5 space-y-2 bg-black/15">
+                    <div className="flex-1 overflow-y-auto px-8 py-5 space-y-1.5"
+                      style={{ backgroundColor: "#efeae2", backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40' viewBox='0 0 40 40'%3E%3Cg fill='%23000000' fill-opacity='0.025'%3E%3Cpath d='M0 0h20v20H0zM20 20h20v20H20z'/%3E%3C/g%3E%3C/svg%3E\")" }}>
                       {convMsgs.map(m => (
                         <div key={m.id} className={`flex ${m.direction === "outbound" ? "justify-end" : "justify-start"}`}>
-                          <div className={`max-w-[75%] rounded-2xl px-3 py-2 text-sm ${m.direction === "outbound" ? "bg-emerald-600/30 text-emerald-50 rounded-br-sm" : "bg-white/8 text-slate-100 rounded-bl-sm"}`}>
-                            <p className="whitespace-pre-wrap break-words">{m.conteudo}</p>
-                            <div className="text-[10px] text-slate-400 mt-1 text-right">
+                          <div className={`max-w-[65%] rounded-lg px-2.5 py-1.5 text-[14.2px] shadow-sm ${m.direction === "outbound" ? "bg-[#d9fdd3] text-[#111b21] rounded-tr-none" : "bg-white text-[#111b21] rounded-tl-none"}`}>
+                            <p className="whitespace-pre-wrap break-words leading-[19px]">{m.conteudo}</p>
+                            <div className="text-[11px] text-[#667781] mt-0.5 text-right">
                               {m.created_at ? new Date(m.created_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : ""}
                             </div>
                           </div>
                         </div>
                       ))}
-                      {convMsgs.length === 0 && <div className="text-center text-slate-500 text-sm py-10">Sem mensagens nesta conversa</div>}
+                      {convMsgs.length === 0 && <div className="text-center text-[#667781] text-sm py-10">Sem mensagens nesta conversa</div>}
                     </div>
-                    <div className="p-3 border-t border-white/5 flex items-center gap-2">
+                    <div className="px-4 py-2.5 bg-[#f0f2f5] flex items-center gap-2">
                       <input value={convInput} onChange={e => setConvInput(e.target.value)}
                         onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendReply(); } }}
                         placeholder={waConnected ? "Digite uma mensagem..." : "Conecte o WhatsApp para enviar"}
                         disabled={!waConnected || convSending}
-                        className="tech-input flex-1 rounded-full px-4 py-2.5 text-sm disabled:opacity-50" />
+                        className="flex-1 rounded-lg px-4 py-2.5 text-sm bg-white text-[#111b21] placeholder-[#667781] border border-transparent focus:outline-none disabled:opacity-60" />
                       <button onClick={sendReply} disabled={!waConnected || convSending || !convInput.trim()}
-                        className="tech-button rounded-full p-3 disabled:opacity-40"><Icon name="send" size={16} /></button>
+                        className="rounded-full p-3 bg-[#00a884] text-white hover:bg-[#017561] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"><Icon name="send" size={16} /></button>
                     </div>
                   </>
                 ) : (
-                  <div className="flex-1 flex flex-col items-center justify-center text-slate-500 gap-3">
+                  <div className="flex-1 flex flex-col items-center justify-center text-[#667781] gap-3 bg-[#f0f2f5]">
                     <Icon name="whatsapp" size={48} />
                     <p className="text-sm">Selecione uma conversa para ver as mensagens</p>
                   </div>
@@ -1217,65 +2064,186 @@ export default function App() {
           {/* DASHBOARD */}
           {page === "dashboard" && stats && (
             <div className="space-y-6">
-              <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
-                <StatCard label="CLIENTES" value={stats.stats.total_empresas} icon="building" accent="#12e7ff" sub="base cadastrada" />
-                <StatCard label="DILIGÊNCIAS" value={stats.stats.com_cnpj} icon="check" accent="#00ff6a" sub="enriquecidas" />
-                <StatCard label="PROCESSOS" value={stats.stats.total_conversas} icon="file" accent="#8b5cf6" sub="fluxos ativos" />
-                <StatCard label="MINUTAS" value={stats.stats.msgs_hoje} icon="document" accent="#f59e0b" sub={`${stats.stats.total_mensagens} total`} />
+              <div className="relative overflow-hidden surface-strong rounded-[28px] p-6 lg:p-7">
+                <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_top_right,rgba(18,231,255,0.10),transparent_34%),radial-gradient(circle_at_bottom_left,rgba(0,255,106,0.10),transparent_28%)]" />
+                <div className="relative flex flex-col gap-6 xl:flex-row xl:items-end xl:justify-between">
+                  <div className="max-w-3xl">
+                    <div className="flex flex-wrap items-center gap-2 mb-4">
+                      <Badge color={waConnected ? "emerald" : "rose"}>{waConnected ? "WhatsApp conectado" : "WhatsApp desconectado"}</Badge>
+                      <Badge color="sky">{campanhasAtivas} campanhas ativas</Badge>
+                      <Badge color="violet">{templates.length} templates salvos</Badge>
+                      <Badge color="amber">{empresasSemWhats} empresas sem WhatsApp</Badge>
+                    </div>
+                    <h3 className="text-3xl lg:text-4xl font-bold text-white leading-tight">Painel operacional do ImobPro</h3>
+                    <p className="mt-3 text-sm lg:text-base text-slate-300 max-w-2xl">
+                      Sistema de prospecção imobiliária para Consolação, Jardins e Bela Vista, com base de empresas,
+                      enriquecimento de CNPJ, campanhas, templates e WhatsApp integrado via Evolution API.
+                    </p>
+                    <div className="mt-6 grid grid-cols-2 md:grid-cols-4 gap-3">
+                      <div className="rounded-2xl border border-white/8 bg-black/15 p-4">
+                        <div className="text-slate-500 text-xs uppercase tracking-[0.18em]">Base</div>
+                        <div className="text-white text-2xl font-semibold mt-2">{totalEmpresas}</div>
+                        <div className="text-slate-400 text-xs mt-1">empresas cadastradas</div>
+                      </div>
+                      <div className="rounded-2xl border border-white/8 bg-black/15 p-4">
+                        <div className="text-slate-500 text-xs uppercase tracking-[0.18em]">CNPJ</div>
+                        <div className="text-white text-2xl font-semibold mt-2">{totalComCnpj}</div>
+                        <div className="text-slate-400 text-xs mt-1">empresas enriquecidas</div>
+                      </div>
+                      <div className="rounded-2xl border border-white/8 bg-black/15 p-4">
+                        <div className="text-slate-500 text-xs uppercase tracking-[0.18em]">Mensagens</div>
+                        <div className="text-white text-2xl font-semibold mt-2">{msgsHoje}</div>
+                        <div className="text-slate-400 text-xs mt-1">enviadas hoje</div>
+                      </div>
+                      <div className="rounded-2xl border border-white/8 bg-black/15 p-4">
+                        <div className="text-slate-500 text-xs uppercase tracking-[0.18em]">Conversas</div>
+                        <div className="text-white text-2xl font-semibold mt-2">{totalConversas}</div>
+                        <div className="text-slate-400 text-xs mt-1">threads ativas</div>
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
               </div>
 
               <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-                {/* Por tipo */}
                 <div className="surface-strong rounded-2xl p-5">
                   <h3 className="text-white font-semibold mb-4 flex items-center gap-2">
-                    <Icon name="chart" size={16} />
-                    Prazo
+                    <Icon name="pulse" size={16} />
+                    Indicadores
                   </h3>
-                  <div className="space-y-3 text-sm">
-                    <div className="rounded-xl bg-white/3 border border-white/5 p-4 text-slate-300">Nenhum prazo crítico no momento</div>
-                    <div className="rounded-xl bg-white/3 border border-white/5 p-4 text-slate-400">Agenda e alertas podem ser ligados depois</div>
+                  <div className="space-y-3">
+                    {[
+                      { label: "Empresas cadastradas", value: totalEmpresas, hint: "base principal do sistema", color: "#12e7ff" },
+                      { label: "Empresas com CNPJ", value: totalComCnpj, hint: "já enriquecidas", color: "#00ff6a" },
+                      { label: "Empresas com WhatsApp", value: totalComWhats, hint: "canais prontos para contato", color: "#8b5cf6" },
+                      { label: "Mensagens totais", value: totalMensagens, hint: "histórico acumulado", color: "#f59e0b" },
+                      { label: "Mensagens hoje", value: msgsHoje, hint: "atividade do dia", color: "#38bdf8" },
+                      { label: "Campanhas ativas", value: campanhasAtivas, hint: "fluxos em andamento", color: "#fb7185" },
+                    ].map(item => (
+                      <div key={item.label} className="rounded-2xl border border-white/6 bg-white/[0.03] p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <div className="text-slate-400 text-xs uppercase tracking-[0.18em]">{item.label}</div>
+                            <div className="text-slate-500 text-xs mt-1">{item.hint}</div>
+                          </div>
+                          <div className="text-2xl font-semibold text-white" style={{ color: item.color }}>{item.value}</div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
 
-                {/* Recentes */}
                 <div className="xl:col-span-2 surface-strong rounded-2xl p-5">
                   <h3 className="text-white font-semibold mb-4 flex items-center gap-2">
-                    <Icon name="building" size={16} />
-                    Empresas Recentes
+                    <Icon name="layers" size={16} />
+                    Base por tipo
                   </h3>
-                  <div className="space-y-2">
-                    {stats.recentes.map(e => (
-                      <div key={e.nome} className="flex items-center justify-between py-2.5 border-b border-[#00e7fc]/8 last:border-0">
-                        <div>
-                          <p className="text-white text-sm font-medium">{e.nome}</p>
-                          <p className="text-slate-500 text-xs">{e.bairro} · {e.tipo}</p>
+                  <div className="space-y-4">
+                    {tiposBase.length > 0 ? tiposBase.map(item => {
+                      const percentual = Math.max(4, Math.round((Number(item.total || 0) / maiorTipo) * 100));
+                      return (
+                        <div key={item.tipo} className="space-y-2">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <p className="text-white text-sm font-medium capitalize">{String(item.tipo || "sem tipo").replaceAll("_", " ")}</p>
+                              <p className="text-slate-500 text-xs">participação na base</p>
+                            </div>
+                            <Badge color="sky">{item.total}</Badge>
+                          </div>
+                          <div className="h-2 rounded-full bg-white/5 overflow-hidden">
+                            <div className="h-full rounded-full bg-gradient-to-r from-[#12e7ff] to-[#00ff6a]" style={{ width: `${percentual}%` }} />
+                          </div>
                         </div>
-                        {e.msgs > 0 && (
-                          <Badge color="emerald">{e.msgs} msgs</Badge>
-                        )}
+                      );
+                    }) : (
+                      <div className="rounded-2xl border border-white/6 bg-white/[0.03] p-4 text-slate-400 text-sm">
+                        Nenhum tipo de empresa disponível na base ainda.
                       </div>
-                    ))}
+                    )}
+                    <div className="rounded-2xl border border-white/6 bg-black/15 p-4 grid grid-cols-2 gap-3">
+                      <div>
+                        <div className="text-slate-500 text-xs uppercase tracking-[0.18em]">WhatsApp</div>
+                        <div className="text-white text-lg font-semibold mt-1">{waConnected ? "Conectado" : "Desconectado"}</div>
+                      </div>
+                      <div>
+                        <div className="text-slate-500 text-xs uppercase tracking-[0.18em]">Template</div>
+                        <div className="text-white text-lg font-semibold mt-1">{templates.length} salvos</div>
+                      </div>
+                      <div>
+                        <div className="text-slate-500 text-xs uppercase tracking-[0.18em]">Conversas</div>
+                        <div className="text-white text-lg font-semibold mt-1">{totalConversas}</div>
+                      </div>
+                      <div>
+                        <div className="text-slate-500 text-xs uppercase tracking-[0.18em]">Mensagens</div>
+                        <div className="text-white text-lg font-semibold mt-1">{totalMensagens}</div>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
 
-              {/* Atividades */}
-              {stats.atividades?.length > 0 && (
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
                 <div className="surface-strong rounded-2xl p-5">
-                  <h3 className="text-white font-semibold mb-4">Atividades Recentes</h3>
+                  <h3 className="text-white font-semibold mb-4 flex items-center gap-2">
+                    <Icon name="building" size={16} />
+                    Empresas recentes
+                  </h3>
                   <div className="space-y-2">
-                    {stats.atividades.map(a => (
-                      <div key={a.id} className="flex items-center gap-3 py-2 border-b border-[#00e7fc]/8 last:border-0">
-                        <div className="w-2 h-2 rounded-full bg-[#00ff4d] flex-shrink-0" />
-                        <span className="text-slate-300 text-sm">{a.empresa_nome}</span>
-                        <span className="text-slate-500 text-sm">·</span>
-                        <span className="text-slate-400 text-sm">{a.descricao}</span>
-                        <span className="ml-auto text-slate-600 text-xs">{new Date(a.created_at).toLocaleDateString("pt-BR")}</span>
+                    {empresasRecentes.length > 0 ? empresasRecentes.map(e => (
+                      <div key={e.nome} className="rounded-2xl border border-white/6 bg-white/[0.03] p-4 flex items-start justify-between gap-4">
+                        <div>
+                          <p className="text-white text-sm font-medium">{e.nome}</p>
+                          <p className="text-slate-500 text-xs mt-1">
+                            {[e.bairro, e.tipo].filter(Boolean).join(" · ") || "Sem classificação"}
+                          </p>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {Number.isFinite(Number(e.score)) && <Badge color="amber">score {e.score}</Badge>}
+                            {Number(e.msgs || 0) > 0 && <Badge color="emerald">{e.msgs} msgs</Badge>}
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-slate-500 text-xs">Criada em</div>
+                          <div className="text-slate-300 text-xs mt-1">
+                            {e.created_at ? new Date(e.created_at).toLocaleDateString("pt-BR") : "sem data"}
+                          </div>
+                        </div>
                       </div>
-                    ))}
+                    )) : (
+                      <div className="rounded-2xl border border-white/6 bg-white/[0.03] p-4 text-slate-400 text-sm">
+                        Nenhuma empresa recente para exibir.
+                      </div>
+                    )}
                   </div>
                 </div>
-              )}
+
+                <div className="surface-strong rounded-2xl p-5">
+                  <h3 className="text-white font-semibold mb-4 flex items-center gap-2">
+                    <Icon name="spark" size={16} />
+                    Atividades recentes
+                  </h3>
+                  <div className="space-y-2">
+                    {atividadesRecentes.length > 0 ? atividadesRecentes.map(a => (
+                      <div key={a.id} className="rounded-2xl border border-white/6 bg-white/[0.03] p-4">
+                        <div className="flex items-start gap-3">
+                          <div className="w-2.5 h-2.5 rounded-full bg-[#00ff4d] flex-shrink-0 mt-2" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-white text-sm font-medium">{a.empresa_nome}</p>
+                            <p className="text-slate-400 text-sm mt-1">{a.descricao}</p>
+                          </div>
+                          <span className="text-slate-500 text-xs whitespace-nowrap">
+                            {a.created_at ? new Date(a.created_at).toLocaleDateString("pt-BR") : ""}
+                          </span>
+                        </div>
+                      </div>
+                    )) : (
+                      <div className="rounded-2xl border border-white/6 bg-white/[0.03] p-4 text-slate-400 text-sm">
+                        Nenhuma atividade registrada ainda.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 
@@ -1297,6 +2265,18 @@ export default function App() {
                   <option value="imobiliaria">Imobiliária</option>
                   <option value="corretora">Corretora</option>
                 </select>
+                <button onClick={handleDiscoverWhatsAppAll} disabled={discoveringAllWA}
+                  title="Buscar WhatsApp de todas as empresas sem número"
+                  className="shrink-0 rounded-xl px-4 py-2.5 text-sm font-semibold flex items-center gap-2 border border-emerald-400/40 text-emerald-300 hover:bg-emerald-400/10 disabled:opacity-60 transition-colors">
+                  <Icon name="whatsapp" size={16} />
+                  {discoveringAllWA ? "Buscando…" : "Pente fino WhatsApp"}
+                </button>
+                <button onClick={handleDiscoverEmailAll} disabled={discoveringAllEmail}
+                  title="Buscar e-mails (empresa + donos) de todas as empresas sem e-mail"
+                  className="shrink-0 rounded-xl px-4 py-2.5 text-sm font-semibold flex items-center gap-2 border border-sky-400/40 text-sky-300 hover:bg-sky-400/10 disabled:opacity-60 transition-colors">
+                  <Icon name="mail" size={16} />
+                  {discoveringAllEmail ? "Buscando…" : "Pente fino e-mails"}
+                </button>
               </div>
 
               {loading ? (
@@ -1311,6 +2291,339 @@ export default function App() {
                   {empresas.length === 0 && (
                     <div className="col-span-3 text-center py-16 text-slate-500">
                       Nenhuma empresa encontrada
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* DECISORES */}
+          {page === "decisores" && (
+            <div className="space-y-5">
+              <div className="flex items-start justify-between gap-4 flex-wrap">
+                <div>
+                  <h2 className="text-white text-lg font-bold">Decisores</h2>
+                  <p className="text-slate-500 text-sm">Donos, sócios e diretores das empresas (QSA da Receita Federal) e pesquisa na web por pessoas com quem fazer negócio.</p>
+                </div>
+                <button onClick={handleBuscarTodosContatos} disabled={decMassaLoading || !decisores.length}
+                  className="shrink-0 tech-button rounded-xl px-4 py-2.5 text-sm font-bold flex items-center gap-2 disabled:opacity-50">
+                  <Icon name="mail" size={15} />
+                  {decMassaLoading
+                    ? (decMassaProgress ? `Buscando… (${decMassaProgress.feito}/${decMassaProgress.total} empresas)` : "Buscando e cadastrando…")
+                    : "Buscar e-mail/tel de todos → Clientes"}
+                </button>
+              </div>
+
+              {/* Progresso / resultado da busca em massa */}
+              {(decMassaResult || decMassaLoading) && (
+                <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-4 text-sm text-emerald-100 space-y-2">
+                  {decMassaProgress && decMassaProgress.total > 0 && (
+                    <div className="h-1.5 w-full rounded-full bg-black/20 overflow-hidden">
+                      <div className="h-full bg-emerald-400 transition-all"
+                        style={{ width: `${Math.round((decMassaProgress.feito / decMassaProgress.total) * 100)}%` }} />
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <span>
+                      {decMassaResult
+                        ? <>{decMassaResult.com_contato}/{decMassaResult.total} com e-mail ou telefone · <strong>{decMassaResult.salvos}</strong> cadastrados em Clientes.{decMassaLoading ? " Continuando…" : ""}</>
+                        : "Iniciando busca… isso roda em lotes e pode levar alguns minutos."}
+                    </span>
+                    {!decMassaLoading && decMassaResult && (
+                      <button onClick={() => setPage("clientes")}
+                        className="text-xs px-3 py-1.5 rounded-lg border border-emerald-400/40 text-emerald-200 hover:bg-emerald-500/10 transition-colors">
+                        Ver Clientes →
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Pesquisa na web */}
+              <div className="surface-strong rounded-2xl p-4 space-y-3">
+                <p className="text-slate-300 text-sm font-semibold flex items-center gap-2"><Icon name="search" size={15} /> Pesquisar decisores na web</p>
+                <div className="flex flex-col md:flex-row gap-2">
+                  <input value={pesquisaEmpresa} onChange={e => setPesquisaEmpresa(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && handlePesquisarDecisores()}
+                    placeholder="Nome da empresa (ex.: Cyrela)"
+                    className="flex-1 tech-input rounded-xl px-3 py-2.5 text-sm" />
+                  <input value={pesquisaTermo} onChange={e => setPesquisaTermo(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && handlePesquisarDecisores()}
+                    placeholder="Cargo/termo opcional (ex.: diretor incorporação)"
+                    className="flex-1 tech-input rounded-xl px-3 py-2.5 text-sm" />
+                  <button onClick={handlePesquisarDecisores} disabled={pesquisando}
+                    className="shrink-0 tech-button rounded-xl px-5 py-2.5 text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-60">
+                    <Icon name="search" size={15} /> {pesquisando ? "Buscando…" : "Pesquisar"}
+                  </button>
+                </div>
+
+                {pesquisaResultado && (
+                  <div className="space-y-3 pt-1">
+                    {pesquisaResultado.tem_provedor === false && (
+                      <p className="text-amber-300 text-xs">Provedor de busca não configurado no servidor (defina GOOGLE/SERPER/BRAVE). A lista de QSA abaixo continua funcionando.</p>
+                    )}
+                    {pesquisaResultado.linkedin?.length > 0 && (
+                      <div>
+                        <p className="text-slate-400 text-xs font-medium mb-1.5">Perfis no LinkedIn</p>
+                        <div className="flex flex-wrap gap-2">
+                          {pesquisaResultado.linkedin.map((l, i) => (
+                            <a key={i} href={l} target="_blank" rel="noreferrer"
+                              className="text-xs px-2.5 py-1 rounded-full border border-sky-500/30 text-sky-300 bg-sky-500/10 hover:bg-sky-500/20 transition-colors">
+                              in/{l.split("/in/")[1]?.replace(/\/$/, "") || "perfil"}
+                            </a>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    <div className="space-y-2">
+                      {(pesquisaResultado.resultados || []).map((r, i) => (
+                        <div key={i} className="surface-soft rounded-xl p-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <a href={r.url} target="_blank" rel="noreferrer" className="text-[#00e7fc] text-sm font-medium hover:underline line-clamp-1">{r.titulo || r.url}</a>
+                              <p className="text-slate-400 text-xs mt-0.5 line-clamp-2">{r.snippet}</p>
+                              <div className="flex items-center gap-2 mt-1.5">
+                                <span className="text-slate-600 text-[11px]">{r.fonte}</span>
+                                {r.cargo && <Badge color="violet">{r.cargo}</Badge>}
+                                {r.linkedin && <Badge color="sky">LinkedIn</Badge>}
+                              </div>
+                            </div>
+                            <button onClick={() => setContatoForm({
+                                empresa_id: (decisores.find(d => (d.empresa_nome || "").toLowerCase() === pesquisaEmpresa.trim().toLowerCase())?.empresa_id) || "",
+                                nome: "", cargo: r.cargo || "", linkedin: r.linkedin || "",
+                                email: "", telefone: "", whatsapp: "",
+                                notas: `${r.titulo || ""}\n${r.url}`.trim(),
+                              })}
+                              className="shrink-0 text-xs px-3 py-1.5 rounded-lg border border-[#00e7fc]/30 text-[#00e7fc] hover:bg-[#00e7fc]/10 transition-colors flex items-center gap-1">
+                              <Icon name="plus" size={13} /> Contato
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                      {(pesquisaResultado.resultados || []).length === 0 && pesquisaResultado.tem_provedor !== false && (
+                        <p className="text-slate-500 text-xs">Nada encontrado para essa empresa.</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Filtros */}
+              <div className="flex flex-col gap-3">
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500"><Icon name="search" size={16} /></span>
+                  <input value={decBusca} onChange={e => setDecBusca(e.target.value)}
+                    placeholder="Buscar por pessoa, empresa ou cargo..."
+                    className="w-full pl-9 pr-4 py-2.5 tech-input rounded-xl text-sm" />
+                </div>
+                {decisoresQuals.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    <button onClick={() => setDecQual("")}
+                      className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${!decQual ? "border-[#00e7fc]/40 text-[#00e7fc] bg-[#00e7fc]/10" : "border-white/10 text-slate-400 hover:text-white"}`}>
+                      Todos
+                    </button>
+                    {decisoresQuals.slice(0, 12).map(q => (
+                      <button key={q.label} onClick={() => setDecQual(decQual === q.label ? "" : q.label)}
+                        className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${decQual === q.label ? "border-[#00e7fc]/40 text-[#00e7fc] bg-[#00e7fc]/10" : "border-white/10 text-slate-400 hover:text-white"}`}>
+                        {q.label} <span className="opacity-60">({q.total})</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Lista de decisores */}
+              {decisoresLoading ? (
+                <div className="flex items-center justify-center py-16">
+                  <div className="w-8 h-8 border-2 border-[#12e7ff] border-t-transparent rounded-full animate-spin" />
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                  {decisores.map((d, i) => (
+                    <div key={i} className="surface-strong rounded-2xl p-4 flex flex-col gap-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="text-white font-semibold text-sm leading-tight">{d.nome}</p>
+                        {d.salvo && <Badge color="emerald">salvo</Badge>}
+                      </div>
+                      <div><Badge color="violet">{d.qualificacao}</Badge></div>
+                      <div className="text-slate-400 text-xs flex items-center gap-1.5 mt-0.5">
+                        <Icon name="building" size={13} /> {d.empresa_nome}{d.empresa_tipo ? ` · ${d.empresa_tipo}` : ""}
+                      </div>
+                      {(d.email || d.telefone || d.linkedin) && (
+                        <div className="text-slate-400 text-xs space-y-0.5 mt-0.5">
+                          {d.email && <a href={`mailto:${d.email}`} className="flex items-center gap-1.5 hover:text-white"><Icon name="mail" size={12} /> {d.email}</a>}
+                          {d.telefone && <div className="flex items-center gap-1.5"><Icon name="phone" size={12} /> {d.telefone}</div>}
+                          {d.linkedin && <a href={d.linkedin} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-sky-300 hover:underline"><Icon name="users" size={12} /> LinkedIn</a>}
+                        </div>
+                      )}
+
+                      {/* Contato da empresa (fallback imediato) */}
+                      {(d.empresa_telefone || d.empresa_whatsapp) && (
+                        <div className="text-slate-500 text-[11px] space-y-0.5 mt-0.5">
+                          {d.empresa_telefone && <div className="flex items-center gap-1.5"><Icon name="phone" size={11} /> {d.empresa_telefone} <span className="text-slate-600">· empresa</span></div>}
+                          {d.empresa_whatsapp && d.empresa_whatsapp !== d.empresa_telefone && <div className="flex items-center gap-1.5"><Icon name="whatsapp" size={11} /> {d.empresa_whatsapp} <span className="text-slate-600">· empresa</span></div>}
+                        </div>
+                      )}
+
+                      {/* Resultado da busca de contato na web */}
+                      {contatoBusca[i] && !contatoBusca[i].loading && (
+                        <div className="mt-1 rounded-lg border border-white/10 bg-black/20 p-2 space-y-1.5">
+                          {contatoBusca[i].tem_provedor === false && (
+                            <p className="text-amber-300 text-[11px]">Provedor de busca não configurado no servidor.</p>
+                          )}
+                          {contatoBusca[i].erro && (
+                            <p className="text-rose-300 text-[11px]">Erro: {contatoBusca[i].erro}</p>
+                          )}
+                          {contatoBusca[i].hunter && (
+                            <p className="text-[10px] text-emerald-400/70">Hunter.io · {contatoBusca[i].dominio || "sem domínio"}</p>
+                          )}
+                          {(contatoBusca[i].emails || []).map((em, k) => {
+                            const eMail = typeof em === "string" ? em : em.email;
+                            const score = typeof em === "object" ? em.score : null;
+                            const cargo = typeof em === "object" ? em.cargo : null;
+                            const viaHunter = typeof em === "object" && (em.fonte || "").includes("Hunter");
+                            return (
+                              <button key={`e${k}`} onClick={() => setContatoForm({
+                                  empresa_id: d.empresa_id, nome: d.nome, cargo: cargo || d.qualificacao,
+                                  email: eMail, telefone: "", whatsapp: "", linkedin: "", notas: "",
+                                })}
+                                className="w-full text-left flex items-center gap-1.5 text-xs text-emerald-300 hover:text-emerald-200">
+                                <Icon name="mail" size={12} />
+                                <span className="truncate">{eMail}</span>
+                                {viaHunter && <span className="text-[9px] px-1 rounded bg-emerald-500/15 text-emerald-300/80 shrink-0">Hunter</span>}
+                                {score != null && <span className="text-[9px] text-slate-500 shrink-0">{score}%</span>}
+                              </button>
+                            );
+                          })}
+                          {(contatoBusca[i].telefones || []).map((tel, k) => (
+                            <button key={`t${k}`} onClick={() => setContatoForm({
+                                empresa_id: d.empresa_id, nome: d.nome, cargo: d.qualificacao,
+                                email: "", telefone: tel, whatsapp: tel, linkedin: "", notas: "",
+                              })}
+                              className="w-full text-left flex items-center gap-1.5 text-xs text-sky-300 hover:text-sky-200">
+                              <Icon name="phone" size={12} /> {tel}
+                            </button>
+                          ))}
+                          {(contatoBusca[i].emails || []).length === 0 && (contatoBusca[i].telefones || []).length === 0 && !contatoBusca[i].erro && (
+                            <p className="text-slate-500 text-[11px]">Nenhum e-mail/telefone encontrado na web.</p>
+                          )}
+                        </div>
+                      )}
+
+                      <div className="flex items-center gap-2 mt-auto pt-2 flex-wrap">
+                        <span className="text-slate-600 text-[10px] flex-1 truncate">{d.fonte}</span>
+                        {!d.salvo && (
+                          <button onClick={() => setContatoForm({
+                              empresa_id: d.empresa_id, nome: d.nome, cargo: d.qualificacao,
+                              email: "", telefone: "", whatsapp: "", linkedin: "", notas: "",
+                            })}
+                            className="text-xs px-2.5 py-1.5 rounded-lg border border-[#00e7fc]/30 text-[#00e7fc] hover:bg-[#00e7fc]/10 transition-colors flex items-center gap-1">
+                            <Icon name="plus" size={12} /> Salvar
+                          </button>
+                        )}
+                        <button onClick={() => handleBuscarContato(i, d)} disabled={contatoBusca[i]?.loading}
+                          className="text-xs px-2.5 py-1.5 rounded-lg border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/10 transition-colors flex items-center gap-1 disabled:opacity-60">
+                          <Icon name="mail" size={12} /> {contatoBusca[i]?.loading ? "Buscando…" : "E-mail/Tel"}
+                        </button>
+                        <button onClick={() => { setPesquisaEmpresa(d.empresa_nome || ""); setPesquisaTermo(d.nome || ""); }}
+                          className="text-xs px-2.5 py-1.5 rounded-lg border border-white/10 text-slate-300 hover:text-white hover:bg-white/5 transition-colors flex items-center gap-1">
+                          <Icon name="search" size={12} /> Web
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {decisores.length === 0 && (
+                    <div className="col-span-3 text-center py-16 text-slate-500">
+                      Nenhum decisor ainda. Enriqueça empresas pelo CNPJ (aba Receita Federal) para puxar o quadro de sócios, ou use a pesquisa na web acima.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* CLIENTES */}
+          {page === "clientes" && (
+            <div className="space-y-5">
+              <div className="flex items-start justify-between gap-4 flex-wrap">
+                <div>
+                  <h2 className="text-white text-lg font-bold">Clientes</h2>
+                  <p className="text-slate-500 text-sm">Pessoas cadastradas a partir dos decisores, com e-mail e telefone. Selecione e jogue numa campanha.</p>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Badge color="sky">{clientes.length} clientes</Badge>
+                  <Badge color="emerald">{clienteSelectedIds.length} selecionados</Badge>
+                </div>
+              </div>
+
+              <div className="flex flex-col md:flex-row gap-3 md:items-center">
+                <div className="relative flex-1">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500"><Icon name="search" size={16} /></span>
+                  <input value={clienteBusca} onChange={e => setClienteBusca(e.target.value)}
+                    placeholder="Buscar por nome, empresa, e-mail ou telefone..."
+                    className="w-full pl-9 pr-4 py-2.5 tech-input rounded-xl text-sm" />
+                </div>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => setClienteSelectedIds(clientes.map(c => c.id))}
+                    className="px-3 py-2.5 rounded-xl text-sm border border-[#00e7fc]/25 text-[#00e7fc] hover:bg-[#00e7fc]/10 transition-colors">
+                    Selecionar todos
+                  </button>
+                  <button onClick={() => setClienteSelectedIds([])}
+                    className="px-3 py-2.5 rounded-xl text-sm border border-white/10 text-slate-300 hover:bg-white/5 transition-colors">
+                    Limpar
+                  </button>
+                  <button onClick={() => enviarClientesParaCampanha("whatsapp")}
+                    className="px-3 py-2.5 rounded-xl text-sm border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/10 transition-colors flex items-center gap-1.5">
+                    <Icon name="send" size={14} /> Campanha WhatsApp
+                  </button>
+                  <button onClick={() => enviarClientesParaCampanha("email")}
+                    className="px-3 py-2.5 rounded-xl text-sm border border-violet-500/30 text-violet-300 hover:bg-violet-500/10 transition-colors flex items-center gap-1.5">
+                    <Icon name="mail" size={14} /> Campanha E-mail
+                  </button>
+                </div>
+              </div>
+
+              {clientesLoading ? (
+                <div className="flex items-center justify-center py-16">
+                  <div className="w-8 h-8 border-2 border-[#12e7ff] border-t-transparent rounded-full animate-spin" />
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                  {clientes.map(c => {
+                    const ativo = clienteSelectedIds.includes(c.id);
+                    return (
+                      <div key={c.id}
+                        className={`surface-strong rounded-2xl p-4 flex flex-col gap-2 border transition-colors ${ativo ? "border-[#00e7fc]/40" : "border-transparent"}`}>
+                        <div className="flex items-start justify-between gap-2">
+                          <button onClick={() => toggleCliente(c.id)} className="text-left min-w-0 flex items-center gap-2">
+                            <span className={`w-5 h-5 shrink-0 rounded-md border flex items-center justify-center text-[11px] ${ativo ? "border-[#00e7fc] bg-[#00e7fc]/20 text-[#00e7fc]" : "border-white/20 text-transparent"}`}>✓</span>
+                            <span className="text-white font-semibold text-sm leading-tight truncate">{c.nome}</span>
+                          </button>
+                          <button onClick={() => handleExcluirCliente(c.id)} className="shrink-0 text-slate-500 hover:text-rose-300 transition-colors">
+                            <Icon name="trash" size={14} />
+                          </button>
+                        </div>
+                        {c.cargo && <div><Badge color="violet">{c.cargo}</Badge></div>}
+                        {c.empresa_nome && (
+                          <div className="text-slate-400 text-xs flex items-center gap-1.5">
+                            <Icon name="building" size={13} /> {c.empresa_nome}
+                          </div>
+                        )}
+                        <div className="text-slate-400 text-xs space-y-0.5 mt-0.5">
+                          {c.email
+                            ? <a href={`mailto:${c.email}`} className="flex items-center gap-1.5 hover:text-white"><Icon name="mail" size={12} /> {c.email}</a>
+                            : <div className="flex items-center gap-1.5 text-slate-600"><Icon name="mail" size={12} /> sem e-mail</div>}
+                          {(c.whatsapp || c.telefone)
+                            ? <div className="flex items-center gap-1.5"><Icon name="phone" size={12} /> {c.whatsapp || c.telefone}</div>
+                            : <div className="flex items-center gap-1.5 text-slate-600"><Icon name="phone" size={12} /> sem telefone</div>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {clientes.length === 0 && (
+                    <div className="col-span-3 text-center py-16 text-slate-500">
+                      Nenhum cliente ainda. Vá em <button onClick={() => setPage("decisores")} className="text-[#00e7fc] hover:underline">Decisores</button> e use “Buscar e-mail/tel de todos → Clientes”.
                     </div>
                   )}
                 </div>
@@ -1500,13 +2813,47 @@ export default function App() {
 
           {/* TEMPLATES */}
           {page === "templates" && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-4">
+              <div className="flex items-center justify-between gap-4 flex-wrap">
+                <div>
+                  <h3 className="text-white font-semibold text-lg">Templates de mensagem</h3>
+                  <p className="text-slate-400 text-sm mt-1">{templates.length} salvos · use {`{{variavel}}`} para personalizar.</p>
+                </div>
+                <button
+                  onClick={openNewTemplate}
+                  className="px-4 py-2.5 tech-button rounded-xl text-white text-sm font-medium flex items-center gap-2"
+                >
+                  <Icon name="plus" size={14} /> Novo template
+                </button>
+              </div>
+              {templates.length === 0 && (
+                <div className="surface-strong rounded-2xl p-8 text-center text-slate-400 text-sm">
+                  Nenhum template ainda. Clique em <span className="text-white">Novo template</span> para criar o primeiro.
+                </div>
+              )}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {templates.map(t => (
                 <div key={t.id} className="surface-strong rounded-2xl p-5">
                   <div className="flex items-start justify-between mb-3">
                     <div>
                       <h3 className="text-white font-semibold">{t.nome}</h3>
                       {t.categoria && <Badge color="sky">{t.categoria}</Badge>}
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => openEditTemplate(t)}
+                        title="Editar template"
+                        className="text-slate-500 hover:text-[#00e7fc] transition-colors p-1"
+                      >
+                        <Icon name="edit" size={16} />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteTemplate(t.id)}
+                        title="Excluir template"
+                        className="text-slate-500 hover:text-red-400 transition-colors p-1"
+                      >
+                        <Icon name="trash" size={16} />
+                      </button>
                     </div>
                   </div>
                   <p className="text-slate-400 text-sm whitespace-pre-line leading-relaxed">{t.conteudo}</p>
@@ -1519,46 +2866,447 @@ export default function App() {
                   )}
                 </div>
               ))}
+              </div>
             </div>
           )}
 
           {/* CAMPANHAS */}
           {page === "campanhas" && (
-            <div className="space-y-4">
-              {campanhas.length === 0 ? (
-                <div className="text-center py-20 text-slate-500">
-                  <Icon name="megaphone" size={40} />
-                  <p className="mt-3">Nenhuma campanha criada ainda</p>
-                </div>
-              ) : campanhas.map(c => (
-                <div key={c.id} className="surface-strong rounded-2xl p-5">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <h3 className="text-white font-semibold">{c.nome}</h3>
-                      <p className="text-slate-500 text-sm mt-0.5">{c.descricao}</p>
-                    </div>
-                    <Badge color={
-                      c.status === "concluida" ? "emerald" :
-                      c.status === "em_andamento" ? "amber" :
-                      c.status === "rascunho" ? "slate" : "sky"
-                    }>{c.status}</Badge>
+            <div className="space-y-5">
+              <div className="surface-strong rounded-3xl p-5 lg:p-6 space-y-6">
+                <div className="flex items-start justify-between gap-4 flex-wrap">
+                  <div>
+                    <h3 className="text-white font-semibold text-lg">
+                      {campanhaCanal === "email" ? "Disparo de E-mail" : "Disparo de WhatsApp"}
+                    </h3>
+                    <p className="text-slate-400 text-sm mt-1">
+                      {campanhaCanal === "email"
+                        ? "Escolha os destinatários da base, defina o assunto e escreva a mensagem. Você pode anexar um arquivo."
+                        : "Primeiro escolha os números da base, depois escreva a mensagem e selecione a imagem ou vídeo."}
+                    </p>
                   </div>
-                  <div className="flex gap-6 mt-4 pt-4 border-t border-[#00e7fc]/8">
-                    <div className="text-center">
-                      <p className="text-2xl font-bold text-white">{c.total_envios}</p>
-                      <p className="text-slate-500 text-xs">Total</p>
-                    </div>
-                    <div className="text-center">
-                      <p className="text-2xl font-bold text-emerald-400">{c.enviados}</p>
-                      <p className="text-slate-500 text-xs">Enviados</p>
-                    </div>
-                    <div className="text-center">
-                      <p className="text-2xl font-bold text-[#00ff4d]">{c.respondidos}</p>
-                      <p className="text-slate-500 text-xs">Respondidos</p>
-                    </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Badge color="sky">
+                      {campanhaCanal === "email"
+                        ? `${campanhaItensFonte.filter(i => i.email).length} e-mails disponíveis`
+                        : `${campanhaItensFonte.filter(i => i.whatsapp || i.telefone).length} números disponíveis`}
+                    </Badge>
+                    <Badge color="emerald">{campanhaSelectedIds.length} selecionados</Badge>
                   </div>
                 </div>
-              ))}
+
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="inline-flex rounded-2xl border border-white/8 bg-black/20 p-1 self-start">
+                    <button
+                      type="button"
+                      onClick={() => { setCampanhaCanal("whatsapp"); setCampanhaSelectedIds([]); setCampanhaResultado(null); }}
+                      className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors ${campanhaCanal === "whatsapp" ? "bg-[#00e7fc]/15 text-[#00e7fc]" : "text-slate-400 hover:text-white"}`}
+                    >
+                      <Icon name="send" size={15} /> WhatsApp
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setCampanhaCanal("email"); setCampanhaSelectedIds([]); setCampanhaResultado(null); }}
+                      className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors ${campanhaCanal === "email" ? "bg-[#00e7fc]/15 text-[#00e7fc]" : "text-slate-400 hover:text-white"}`}
+                    >
+                      <Icon name="mail" size={15} /> E-mail
+                    </button>
+                  </div>
+
+                  <div className="inline-flex rounded-2xl border border-white/8 bg-black/20 p-1 self-start">
+                    <button
+                      type="button"
+                      onClick={() => { setCampanhaFonte("empresas"); setCampanhaSelectedIds([]); setCampanhaResultado(null); }}
+                      className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors ${campanhaFonte === "empresas" ? "bg-[#00e7fc]/15 text-[#00e7fc]" : "text-slate-400 hover:text-white"}`}
+                    >
+                      <Icon name="building" size={15} /> Empresas
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setCampanhaFonte("clientes"); setCampanhaSelectedIds([]); setCampanhaResultado(null); }}
+                      className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-colors ${campanhaFonte === "clientes" ? "bg-[#00e7fc]/15 text-[#00e7fc]" : "text-slate-400 hover:text-white"}`}
+                    >
+                      <Icon name="users" size={15} /> Clientes
+                    </button>
+                  </div>
+                </div>
+
+                {campanhaResultado && (
+                  <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-4 text-sm text-emerald-100">
+                    Disparo concluído: {campanhaResultado.enviados}/{campanhaResultado.total} enviados
+                    {campanhaResultado.media ? " com mídia/anexo" : ""}
+                    {campanhaResultado.sem_email ? ` · ${campanhaResultado.sem_email} sem e-mail` : ""}
+                    {campanhaResultado.erros ? ` · ${campanhaResultado.erros} com erro` : ""}.
+                    {Array.isArray(campanhaResultado.erros_detalhes) && campanhaResultado.erros_detalhes.length > 0 && (
+                      <div className="mt-3 space-y-2 text-xs text-emerald-50/90">
+                        {campanhaResultado.erros_detalhes.map((item, idx) => (
+                          <div key={`${item?.empresa || "erro"}-${idx}`} className="rounded-xl border border-emerald-400/20 bg-black/10 px-3 py-2">
+                            <div className="font-medium text-white">{item?.empresa || "Destinatário"}</div>
+                            <div className="text-emerald-100/80 mt-0.5">
+                              {item?.numero ? `+${item.numero} · ` : ""}{item?.erro || "Falha no envio"}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 xl:grid-cols-[1.15fr_0.85fr] gap-5">
+                  <div className="space-y-4">
+                    <div className="rounded-2xl border border-white/6 bg-white/[0.03] p-4">
+                      <div className="flex items-center justify-between gap-3 flex-wrap">
+                        <div>
+                          <p className="text-white font-semibold">
+                            {campanhaCanal === "email" ? "1. Selecione os destinatários" : "1. Selecione os números"}
+                          </p>
+                          <p className="text-slate-500 text-sm">
+                            {campanhaFonte === "clientes"
+                              ? (campanhaCanal === "email" ? "A lista abaixo mostra clientes com e-mail cadastrado." : "A lista abaixo mostra clientes com WhatsApp ou telefone cadastrado.")
+                              : (campanhaCanal === "email" ? "A lista abaixo mostra empresas com e-mail cadastrado." : "A lista abaixo mostra empresas com WhatsApp ou telefone cadastrado.")}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={selecionarTodosCampanha}
+                            className="px-3 py-2 rounded-xl text-sm border border-[#00e7fc]/25 text-[#00e7fc] hover:bg-[#00e7fc]/10 transition-colors"
+                          >
+                            Selecionar todos
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setCampanhaSelectedIds([])}
+                            className="px-3 py-2 rounded-xl text-sm border border-white/10 text-slate-300 hover:bg-white/5 transition-colors"
+                          >
+                            Limpar
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 flex gap-3">
+                        <div className="relative flex-1">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">
+                            <Icon name="search" size={16} />
+                          </span>
+                          <input
+                            value={campanhaTargetSearch}
+                            onChange={e => setCampanhaTargetSearch(e.target.value)}
+                            placeholder={campanhaCanal === "email" ? "Buscar empresa ou e-mail..." : "Buscar empresa ou número..."}
+                            className="w-full pl-9 pr-4 py-2.5 tech-input rounded-xl text-sm"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="mt-4 max-h-[360px] overflow-y-auto space-y-2 pr-1">
+                        {(() => {
+                          const lista = campanhaItensFonte.filter(item => {
+                            const contato = campanhaCanal === "email"
+                              ? (item.email || "")
+                              : (item.whatsapp || item.telefone || "");
+                            if (!contato) return false;
+                            const termo = campanhaTargetSearch.trim().toLowerCase();
+                            if (!termo) return true;
+                            return (
+                              String(item.nome || "").toLowerCase().includes(termo) ||
+                              String(contato).toLowerCase().includes(termo) ||
+                              String(item.tipo || "").toLowerCase().includes(termo)
+                            );
+                          });
+                          if (lista.length === 0) {
+                            return (
+                              <div className="rounded-2xl border border-white/6 bg-black/10 p-4 text-slate-500 text-sm">
+                                {campanhaCanal === "email" ? "Nenhum e-mail encontrado." : "Nenhum número encontrado."}
+                              </div>
+                            );
+                          }
+                          return lista.map(item => {
+                            const contato = campanhaCanal === "email"
+                              ? (item.email || "")
+                              : (item.whatsapp || item.telefone || "");
+                            const possuiWhatsApp = Boolean(item.whatsapp);
+                            const possuiTelefone = Boolean(item.telefone);
+                            const badgeContato = campanhaCanal === "email"
+                              ? (contato ? "E-mail" : "Sem e-mail")
+                              : (possuiWhatsApp ? "WhatsApp" : (possuiTelefone ? "Telefone" : "Sem número"));
+                            const ativo = campanhaSelectedIds.includes(String(item.id));
+                            return (
+                              <button
+                                key={item.id}
+                                type="button"
+                                onClick={() => toggleCampanhaTarget(String(item.id))}
+                                className={`w-full text-left rounded-2xl border p-4 transition-colors ${ativo
+                                  ? "border-[#00e7fc]/35 bg-[#00e7fc]/10"
+                                  : "border-white/6 bg-black/10 hover:bg-white/[0.04]"
+                                }`}
+                              >
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <p className="text-white text-sm font-medium truncate">{item.nome}</p>
+                                      {item.tipo && <Badge color="sky">{item.tipo}</Badge>}
+                                      <Badge color={campanhaCanal === "email" ? "sky" : (possuiWhatsApp ? "emerald" : "amber")}>
+                                        {badgeContato}
+                                      </Badge>
+                                    </div>
+                                    <p className="text-slate-400 text-xs mt-1 truncate">
+                                      {contato || (campanhaCanal === "email" ? "Sem e-mail" : "Sem número")}
+                                      {item.bairro ? ` · ${item.bairro}` : ""}
+                                    </p>
+                                    {campanhaCanal === "whatsapp" && !possuiWhatsApp && possuiTelefone && (
+                                      <p className="text-amber-300/90 text-[11px] mt-1">
+                                        Este contato está cadastrado só com telefone. Pode não receber no WhatsApp.
+                                      </p>
+                                    )}
+                                  </div>
+                                  <div className={`w-5 h-5 rounded-md border flex items-center justify-center ${ativo ? "border-[#00e7fc] bg-[#00e7fc]/20 text-[#00e7fc]" : "border-white/20 text-transparent"}`}>
+                                    ✓
+                                  </div>
+                                </div>
+                              </button>
+                            );
+                          });
+                        })()}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-white/6 bg-white/[0.03] p-4">
+                      <p className="text-white font-semibold">2. Escolha a mensagem</p>
+                      <p className="text-slate-500 text-sm mt-1">Você pode usar um template existente ou escrever uma mensagem personalizada.</p>
+
+                      <div className="mt-4">
+                        <label className="text-slate-400 text-sm block mb-1.5">Template</label>
+                        <select
+                          value={campanhaTemplateId}
+                          onChange={e => handleCampanhaTemplate(e.target.value)}
+                          className="w-full surface-soft rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-[#00e7fc]"
+                        >
+                          <option value="">Mensagem personalizada</option>
+                          {templates.map(t => (
+                            <option key={t.id} value={t.id}>
+                              {t.nome}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {campanhaCanal === "email" && (
+                        <div className="mt-4">
+                          <label className="text-slate-400 text-sm block mb-1.5">Assunto do e-mail</label>
+                          <input
+                            value={campanhaAssunto}
+                            onChange={e => setCampanhaAssunto(e.target.value)}
+                            placeholder="Ex: Proposta de parceria - {{empresa}}"
+                            className="w-full tech-input rounded-xl px-3 py-2.5 text-sm"
+                          />
+                        </div>
+                      )}
+
+                      <div className="mt-4">
+                        <label className="text-slate-400 text-sm block mb-1.5">Título da campanha</label>
+                        <input
+                          value={campanhaNome}
+                          onChange={e => setCampanhaNome(e.target.value)}
+                          placeholder="Ex: Disparo Jardins - Julho"
+                          className="w-full tech-input rounded-xl px-3 py-2.5 text-sm"
+                        />
+                      </div>
+
+                      <div className="mt-4">
+                        <label className="text-slate-400 text-sm block mb-1.5">Descrição</label>
+                        <input
+                          value={campanhaDescricao}
+                          onChange={e => setCampanhaDescricao(e.target.value)}
+                          placeholder="Resumo da campanha"
+                          className="w-full tech-input rounded-xl px-3 py-2.5 text-sm"
+                        />
+                      </div>
+
+                      <div className="mt-4">
+                        <label className="text-slate-400 text-sm block mb-1.5">Mensagem</label>
+                        <textarea
+                          value={campanhaMensagem}
+                          onChange={e => setCampanhaMensagem(e.target.value)}
+                          placeholder="Digite a mensagem que vai ser enviada..."
+                          rows={8}
+                          className="w-full tech-input rounded-xl px-3 py-2.5 text-sm resize-none"
+                        />
+                        <p className="text-[11px] text-slate-500 mt-2">
+                          Use <span className="text-slate-300">{"{{empresa}}"}</span> para personalizar o nome da empresa.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="rounded-2xl border border-white/6 bg-white/[0.03] p-4">
+                      <p className="text-white font-semibold">
+                        {campanhaCanal === "email" ? "3. Adicione um anexo" : "3. Adicione uma mídia"}
+                      </p>
+                      <p className="text-slate-500 text-sm mt-1">
+                        {campanhaCanal === "email"
+                          ? "Anexe uma imagem ou vídeo ao e-mail (opcional)."
+                          : "Envie uma imagem ou um vídeo junto com a mensagem."}
+                      </p>
+
+                      <div className="mt-4">
+                        <input
+                          type="file"
+                          accept="image/*,video/*"
+                          onChange={async e => {
+                            try {
+                              await handleCampanhaMedia(e.target.files?.[0] || null);
+                            } catch (err) {
+                              alert(err.message || "Falha ao enviar mídia.");
+                            }
+                          }}
+                          className="w-full text-sm text-slate-300 file:mr-4 file:rounded-xl file:border-0 file:bg-[#00e7fc]/15 file:px-4 file:py-2 file:text-[#00e7fc] hover:file:bg-[#00e7fc]/20"
+                        />
+                        <p className="text-[11px] text-slate-500 mt-2">
+                          Aceita imagens e vídeos. Se você trocar o arquivo, a prévia é atualizada automaticamente.
+                        </p>
+                      </div>
+
+                      <div className="mt-4 rounded-2xl border border-white/6 bg-black/15 p-4 space-y-2">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-slate-400 text-sm">Arquivo</span>
+                          <button
+                            type="button"
+                            onClick={() => handleCampanhaMedia(null)}
+                            className="text-xs text-slate-400 hover:text-white"
+                          >
+                            Remover
+                          </button>
+                        </div>
+                        <p className="text-white text-sm">{campanhaMediaNome || "Nenhum arquivo selecionado"}</p>
+                        <p className="text-slate-500 text-xs">{campanhaMediaMime || "image/* ou video/*"}</p>
+                      </div>
+
+                      {campanhaMediaPreview && (
+                        <div className="mt-4 rounded-2xl border border-white/6 bg-black/20 p-3">
+                          <div className="flex items-center justify-between gap-3 mb-3">
+                            <span className="text-slate-400 text-sm">Prévia</span>
+                            <Badge color={campanhaMediaType === "video" ? "violet" : "sky"}>
+                              {campanhaMediaType === "video" ? "Vídeo" : "Imagem"}
+                            </Badge>
+                          </div>
+                          {campanhaMediaType === "video" ? (
+                            <video
+                              controls
+                              src={campanhaMediaPreview}
+                              className="w-full max-h-64 rounded-xl border border-white/10 bg-black"
+                            />
+                          ) : (
+                            <img
+                              src={campanhaMediaPreview}
+                              alt="Prévia da mídia da campanha"
+                              className="w-full max-h-64 object-contain rounded-xl border border-white/10 bg-black"
+                            />
+                          )}
+                        </div>
+                      )}
+
+                      <div className="mt-4 grid grid-cols-2 gap-3">
+                        <div className="rounded-2xl border border-white/6 bg-black/10 p-3">
+                          <div className="text-slate-500 text-xs uppercase tracking-[0.18em]">Selecionados</div>
+                          <div className="text-white text-2xl font-semibold mt-2">{campanhaSelectedIds.length}</div>
+                        </div>
+                        <div className="rounded-2xl border border-white/6 bg-black/10 p-3">
+                        <div className="text-slate-500 text-xs uppercase tracking-[0.18em]">{campanhaCanal === "email" ? "E-mails" : "Números"}</div>
+                        <div className="text-white text-2xl font-semibold mt-2">
+                          {campanhaCanal === "email"
+                            ? campanhaItensFonte.filter(i => i.email).length
+                            : campanhaItensFonte.filter(i => i.whatsapp || i.telefone).length}
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border border-white/6 bg-black/10 p-3 col-span-2">
+                        <div className="text-slate-500 text-xs uppercase tracking-[0.18em]">Arquivo</div>
+                        <div className="text-white text-sm font-medium mt-2">
+                          {campanhaMediaNome || "Nenhum arquivo selecionado"}
+                        </div>
+                      </div>
+                    </div>
+
+                      <button
+                        type="button"
+                        onClick={campanhaCanal === "email" ? dispararCampanhaEmail : dispararCampanhaRapida}
+                        disabled={campanhaEnviando}
+                        className="mt-4 w-full py-3 tech-button rounded-xl text-white text-sm font-medium disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
+                      >
+                        <Icon name={campanhaCanal === "email" ? "mail" : "send"} size={16} />
+                        {campanhaEnviando
+                          ? "Disparando..."
+                          : campanhaCanal === "email" ? "Disparar E-mail" : "Disparar WhatsApp"}
+                      </button>
+                    </div>
+
+                    <div className="rounded-2xl border border-white/6 bg-white/[0.03] p-4">
+                      <p className="text-white font-semibold">Resumo do disparo</p>
+                      <div className="mt-4 space-y-2 text-sm">
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-500">Canal</span>
+                          <span className="text-white">{campanhaCanal === "email" ? "E-mail" : "WhatsApp"}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-500">Selecionados</span>
+                          <span className="text-white">{campanhaSelectedIds.length}</span>
+                        </div>
+                        {campanhaCanal === "email" && (
+                          <div className="flex items-center justify-between">
+                            <span className="text-slate-500">Assunto</span>
+                            <span className="text-white">{campanhaAssunto.trim() ? "pronto" : "vazio"}</span>
+                          </div>
+                        )}
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-500">Mensagem</span>
+                          <span className="text-white">{campanhaMensagem.trim() ? "pronta" : "vazia"}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-500">{campanhaCanal === "email" ? "Anexo" : "Mídia"}</span>
+                          <span className="text-white">{campanhaMediaNome ? "anexado" : (campanhaCanal === "email" ? "sem anexo" : "sem mídia")}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                {campanhas.length === 0 ? (
+                  <div className="text-center py-20 text-slate-500 surface-strong rounded-2xl">
+                    <Icon name="megaphone" size={40} />
+                    <p className="mt-3">Nenhuma campanha criada ainda</p>
+                  </div>
+                ) : campanhas.map(c => (
+                  <div key={c.id} className="surface-strong rounded-2xl p-5">
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <h3 className="text-white font-semibold">{c.nome}</h3>
+                        <p className="text-slate-500 text-sm mt-0.5">{c.descricao}</p>
+                      </div>
+                      <Badge color={
+                        c.status === "concluida" ? "emerald" :
+                        c.status === "em_andamento" ? "amber" :
+                        c.status === "rascunho" ? "slate" : "sky"
+                      }>{c.status}</Badge>
+                    </div>
+                    <div className="flex gap-6 mt-4 pt-4 border-t border-[#00e7fc]/8">
+                      <div className="text-center">
+                        <p className="text-2xl font-bold text-white">{c.total_envios}</p>
+                        <p className="text-slate-500 text-xs">Total</p>
+                      </div>
+                      <div className="text-center">
+                        <p className="text-2xl font-bold text-emerald-400">{c.enviados}</p>
+                        <p className="text-slate-500 text-xs">Enviados</p>
+                      </div>
+                      <div className="text-center">
+                        <p className="text-2xl font-bold text-[#00ff4d]">{c.respondidos}</p>
+                        <p className="text-slate-500 text-xs">Respondidos</p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
@@ -1578,7 +3326,9 @@ export default function App() {
                       {waConnected ? "WhatsApp Conectado ✓" : "WhatsApp Desconectado"}
                     </h3>
                     <p className="text-slate-400 text-sm">
-                      {waConnected ? "Pronto para enviar mensagens" : "Escaneie o QR Code para conectar"}
+                      Conta: <span className="text-slate-200 font-medium">{waInstance}</span>
+                      {" · "}
+                      {waConnected ? "pronto para enviar mensagens" : "escaneie o QR Code para conectar"}
                     </p>
                   </div>
                 </div>
@@ -1587,7 +3337,7 @@ export default function App() {
               {!waConnected && (
                 <div className="surface-strong rounded-2xl p-6 text-center">
                   <p className="text-slate-400 text-sm mb-4">
-                    Abra o WhatsApp no celular → <b>Aparelhos conectados</b> → <b>Conectar um aparelho</b> e escaneie o código abaixo.
+                    Conectando a conta <b className="text-[#00e7fc]">{waInstance}</b>. Abra o WhatsApp no celular → <b>Aparelhos conectados</b> → <b>Conectar um aparelho</b> e escaneie o código abaixo.
                   </p>
                   <div className="flex justify-center mb-4">
                     {waQR ? (
@@ -1604,17 +3354,85 @@ export default function App() {
                 </div>
               )}
 
+              {/* Contas de WhatsApp (multi-instância) */}
               <div className="surface-strong rounded-2xl p-5">
-                <h3 className="text-white font-semibold mb-3">Configurações</h3>
-                <div className="space-y-3 text-sm">
-                  <div className="flex justify-between py-2 border-b border-[#00e7fc]/8">
-                    <span className="text-slate-500">Evolution API URL</span>
-                    <span className="text-slate-300">http://evolution:8080</span>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-white font-semibold flex items-center gap-2">
+                    <Icon name="users" size={16} /> Contas de WhatsApp
+                  </h3>
+                  <button onClick={loadContas} title="Atualizar"
+                    className="text-slate-400 hover:text-white transition-colors">
+                    <Icon name="refresh" size={15} />
+                  </button>
+                </div>
+                <p className="text-slate-500 text-xs mb-4">
+                  Conecte vários números. Selecione uma conta para gerar o QR Code dela.
+                </p>
+
+                <div className="space-y-2">
+                  {waContas.length === 0 && (
+                    <p className="text-slate-500 text-sm py-2">
+                      {waContasLoading ? "Carregando contas..." : "Nenhuma conta encontrada."}
+                    </p>
+                  )}
+                  {waContas.map((conta) => {
+                    const ativa = conta.nome === waInstance;
+                    return (
+                      <div key={conta.nome}
+                        className={`flex items-center gap-3 rounded-xl border p-3 transition-colors ${ativa
+                          ? "border-[#00e7fc]/40 bg-[#00e7fc]/10"
+                          : "border-white/5 bg-white/3 hover:border-[#00e7fc]/20"}`}>
+                        <button onClick={() => selecionarConta(conta.nome)} className="flex items-center gap-3 flex-1 min-w-0 text-left">
+                          <span className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${
+                            conta.conectado ? "bg-emerald-500/20 text-emerald-300" : "bg-slate-500/15 text-slate-400"}`}>
+                            <Icon name="whatsapp" size={15} />
+                          </span>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-white text-sm font-medium truncate">{conta.nome}</span>
+                              {conta.padrao && <Badge color="slate">padrão</Badge>}
+                              {ativa && <Badge color="violet">selecionada</Badge>}
+                            </div>
+                            <span className={`text-xs ${conta.conectado ? "text-emerald-400" : "text-slate-500"}`}>
+                              {conta.conectado ? "● Conectado" : "○ Desconectado"}
+                            </span>
+                          </div>
+                        </button>
+                        {!conta.conectado && (
+                          <button onClick={() => selecionarConta(conta.nome)}
+                            className="shrink-0 text-xs px-2.5 py-1.5 rounded-lg border border-[#00e7fc]/30 text-[#00e7fc] hover:bg-[#00e7fc]/10 transition-colors">
+                            Conectar
+                          </button>
+                        )}
+                        {!conta.padrao && (
+                          <button onClick={() => removeConta(conta.nome)} title="Remover conta"
+                            className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg border border-rose-500/25 text-rose-300 hover:bg-rose-500/10 transition-colors">
+                            <Icon name="x" size={14} />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-4 pt-4 border-t border-[#00e7fc]/8">
+                  <label className="text-slate-400 text-xs block mb-1.5">Adicionar nova conta</label>
+                  <div className="flex gap-2">
+                    <input
+                      value={waNovaConta}
+                      onChange={(e) => setWaNovaConta(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") addConta(); }}
+                      placeholder="ex: vendas, suporte, locação..."
+                      className="flex-1 tech-input rounded-xl px-3 py-2 text-white text-sm"
+                    />
+                    <button onClick={addConta} disabled={waAddingConta || !waNovaConta.trim()}
+                      className="shrink-0 px-3 py-2 tech-button rounded-xl text-sm font-medium disabled:opacity-50 flex items-center gap-1.5">
+                      <Icon name="plus" size={15} /> {waAddingConta ? "Criando..." : "Adicionar"}
+                    </button>
                   </div>
-                  <div className="flex justify-between py-2">
-                    <span className="text-slate-500">Instância</span>
-                    <span className="text-slate-300">imobpro</span>
-                  </div>
+                  <p className="text-[11px] text-slate-500 mt-1.5">
+                    O nome é normalizado (minúsculas, sem espaços). Depois de criar, selecione a conta e escaneie o QR.
+                  </p>
                 </div>
               </div>
             </div>
@@ -1671,7 +3489,7 @@ export default function App() {
       </Modal>
 
       {/* NEW TEMPLATE MODAL */}
-      <Modal open={showTemplateModal} onClose={() => setShowTemplateModal(false)} title="Novo Template">
+      <Modal open={showTemplateModal} onClose={() => { setShowTemplateModal(false); setEditingTemplateId(null); }} title={editingTemplateId ? "Editar Template" : "Novo Template"}>
         <div className="space-y-4">
           <div>
             <label className="text-slate-400 text-sm block mb-1.5">Nome</label>
@@ -1692,11 +3510,53 @@ export default function App() {
               rows={6}
               className="w-full tech-input rounded-xl px-3 py-2 text-white text-sm resize-none" />
           </div>
-          <button onClick={handleAddTemplate} disabled={!newTemplate.nome || !newTemplate.conteudo}
+          <button onClick={handleSaveTemplate} disabled={!newTemplate.nome || !newTemplate.conteudo}
             className="w-full py-2.5 tech-button rounded-xl text-white text-sm font-medium disabled:opacity-50 transition-colors flex items-center justify-center gap-2">
-            <Icon name="plus" size={14} /> Criar template
+            <Icon name={editingTemplateId ? "check" : "plus"} size={14} /> {editingTemplateId ? "Salvar alterações" : "Criar template"}
           </button>
         </div>
+      </Modal>
+
+      {/* SALVAR DECISOR COMO CONTATO */}
+      <Modal open={!!contatoForm} onClose={() => setContatoForm(null)} title="Salvar decisor como contato">
+        {contatoForm && (
+          <div className="space-y-3">
+            <div>
+              <label className="text-slate-400 text-sm block mb-1.5">Empresa</label>
+              <select value={contatoForm.empresa_id} onChange={e => setContatoForm(p => ({ ...p, empresa_id: e.target.value }))}
+                className="w-full tech-input rounded-xl px-3 py-2 text-white text-sm">
+                <option value="">Selecione a empresa…</option>
+                {Array.from(new Map(decisores.map(d => [d.empresa_id, d.empresa_nome])).entries())
+                  .sort((a, b) => (a[1] || "").localeCompare(b[1] || ""))
+                  .map(([id, nome]) => (<option key={id} value={id}>{nome}</option>))}
+              </select>
+              {!contatoForm.empresa_id && <p className="text-slate-600 text-[11px] mt-1">O contato é vinculado a uma empresa cadastrada.</p>}
+            </div>
+            {[
+              { label: "Nome", key: "nome", ph: "Nome da pessoa" },
+              { label: "Cargo", key: "cargo", ph: "Diretor, sócio, fundador..." },
+              { label: "E-mail", key: "email", ph: "email@empresa.com" },
+              { label: "Telefone", key: "telefone", ph: "(11) 0000-0000" },
+              { label: "WhatsApp", key: "whatsapp", ph: "(11) 90000-0000" },
+              { label: "LinkedIn", key: "linkedin", ph: "https://linkedin.com/in/..." },
+            ].map(({ label, key, ph }) => (
+              <div key={key}>
+                <label className="text-slate-400 text-sm block mb-1.5">{label}</label>
+                <input value={contatoForm[key] || ""} onChange={e => setContatoForm(p => ({ ...p, [key]: e.target.value }))}
+                  placeholder={ph} className="w-full tech-input rounded-xl px-3 py-2 text-white text-sm" />
+              </div>
+            ))}
+            <div>
+              <label className="text-slate-400 text-sm block mb-1.5">Notas</label>
+              <textarea value={contatoForm.notas || ""} onChange={e => setContatoForm(p => ({ ...p, notas: e.target.value }))}
+                rows={3} className="w-full tech-input rounded-xl px-3 py-2 text-white text-sm resize-none" />
+            </div>
+            <button onClick={handleSalvarContato} disabled={!contatoForm.nome?.trim() || !contatoForm.empresa_id}
+              className="w-full py-2.5 tech-button rounded-xl text-white text-sm font-medium disabled:opacity-50 transition-colors flex items-center justify-center gap-2">
+              <Icon name="check" size={14} /> Salvar contato
+            </button>
+          </div>
+        )}
       </Modal>
     </div>
   );

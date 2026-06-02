@@ -1,11 +1,10 @@
 import uuid
 from typing import List, Optional
 
-import asyncpg
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from database import settings
+from database import get_conn
 
 router = APIRouter()
 
@@ -19,12 +18,6 @@ ESTEIRA = [
     "Comitê de Investimento",
     "Closing",
 ]
-
-
-async def get_conn():
-    return await asyncpg.connect(
-        settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
-    )
 
 
 def _uuid(v):
@@ -197,6 +190,54 @@ async def criar_empreendimento(body: Empreendimento):
             codigo, *_emp_values(body),
         )
         return _emp_dict(row)
+    finally:
+        await conn.close()
+
+
+@router.post("/empreendimentos/importar-empresas")
+async def importar_empresas():
+    """Copia todas as empresas cadastradas para a base de empreendimentos.
+    Mapeia os campos equivalentes e pula empresas que já foram importadas
+    (mesmo nome), então pode ser executado várias vezes sem duplicar."""
+    conn = await get_conn()
+    try:
+        empresas = await conn.fetch("SELECT * FROM empresas ORDER BY nome")
+        existentes = await conn.fetch("SELECT LOWER(nome) AS nome FROM dmc_empreendimentos")
+        ja = {r["nome"] for r in existentes if r["nome"]}
+
+        criados = 0
+        pulados = 0
+        for e in empresas:
+            d = dict(e)
+            nome = (d.get("nome") or "").strip()
+            if not nome or nome.lower() in ja:
+                pulados += 1
+                continue
+
+            endereco = ", ".join(
+                str(p) for p in (d.get("logradouro"), d.get("numero")) if p
+            ) or None
+            obs_partes = [d.get("observacoes")]
+            if d.get("cnpj"):
+                obs_partes.append(f"CNPJ: {d['cnpj']}")
+            if d.get("website"):
+                obs_partes.append(f"Site: {d['website']}")
+            observacoes = "\n".join(str(p) for p in obs_partes if p) or None
+
+            codigo = await _proximo_codigo(conn)
+            await conn.execute(
+                """INSERT INTO dmc_empreendimentos
+                   (codigo, nome, tipologia, status, cidade, uf, bairro, endereco, cep,
+                    url_fonte, lat, lng, observacoes)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)""",
+                codigo, nome, d.get("tipo"), "Originação",
+                d.get("municipio"), d.get("uf"), d.get("bairro"), endereco, d.get("cep"),
+                d.get("website"), d.get("lat"), d.get("lng"), observacoes,
+            )
+            ja.add(nome.lower())
+            criados += 1
+
+        return {"criados": criados, "pulados": pulados, "total_empresas": len(empresas)}
     finally:
         await conn.close()
 

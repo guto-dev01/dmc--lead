@@ -1,13 +1,8 @@
 from fastapi import APIRouter
-import asyncpg
-from database import settings
+from database import get_conn
 
 router = APIRouter()
 
-async def get_conn():
-    return await asyncpg.connect(
-        settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
-    )
 
 @router.get("")
 async def dashboard_stats():

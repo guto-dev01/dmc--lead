@@ -1,15 +1,25 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-import httpx, uuid, asyncpg
-from database import settings
+import httpx, uuid, re
+from database import settings, get_conn
 
 router = APIRouter()
+webhook_router = APIRouter()
 
-async def get_conn():
-    return await asyncpg.connect(
-        settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
-    )
+
+def inst(instance: Optional[str]) -> str:
+    """Resolve o nome da instância: usa o informado ou cai no padrão das configs."""
+    nome = (instance or "").strip()
+    return nome or settings.evolution_instance
+
+
+def sanitizar_nome_instancia(nome: str) -> str:
+    """Normaliza o nome de uma conta de WhatsApp (slug seguro p/ a Evolution)."""
+    base = (nome or "").strip().lower()
+    base = re.sub(r"[^a-z0-9_-]+", "-", base).strip("-_")
+    return base[:40]
+
 
 def evo_headers():
     return {
@@ -114,6 +124,7 @@ class EnviarMensagem(BaseModel):
     empresa_id: Optional[str] = None
     conversa_id: Optional[str] = None
     contato_id: Optional[str] = None
+    instance: Optional[str] = None
 
 class EnviarTemplate(BaseModel):
     empresa_id: str
@@ -123,11 +134,10 @@ class EnviarTemplate(BaseModel):
     contato_id: Optional[str] = None
 
 
-@router.post("/instancia")
-async def criar_instancia():
-    """Cria (ou garante) a instância na Evolution já com o webhook apontado p/ o backend."""
+async def _garantir_instancia(instance_name: str) -> dict:
+    """Cria (ou garante) uma instância na Evolution já com o webhook p/ o backend."""
     payload = {
-        "instanceName": settings.evolution_instance,
+        "instanceName": instance_name,
         "integration": "WHATSAPP-BAILEYS",
         "qrcode": True,
         "webhook": {
@@ -142,15 +152,22 @@ async def criar_instancia():
         r = await client.post(url, json=payload, headers=evo_headers())
     # 403 = instância já existe; nesse caso só (re)configura o webhook
     if r.status_code in (200, 201):
-        return {"ok": True, "criada": True, "result": r.json()}
+        return {"ok": True, "criada": True, "instancia": instance_name, "result": r.json()}
     if r.status_code == 403:
-        await configurar_webhook()
-        return {"ok": True, "criada": False, "detail": "Instância já existia; webhook reconfigurado."}
+        await configurar_webhook(instance_name)
+        return {"ok": True, "criada": False, "instancia": instance_name,
+                "detail": "Instância já existia; webhook reconfigurado."}
     raise HTTPException(status_code=r.status_code, detail=f"Evolution API: {r.text}")
 
 
+@router.post("/instancia")
+async def criar_instancia(instance: Optional[str] = None):
+    """Cria (ou garante) a instância na Evolution já com o webhook apontado p/ o backend."""
+    return await _garantir_instancia(inst(instance))
+
+
 @router.post("/webhook-config")
-async def configurar_webhook():
+async def configurar_webhook(instance: Optional[str] = None):
     """(Re)configura o webhook da instância para o backend."""
     payload = {
         "webhook": {
@@ -161,27 +178,108 @@ async def configurar_webhook():
             "events": ["MESSAGES_UPSERT", "CONNECTION_UPDATE"],
         }
     }
-    return await evo_post(f"webhook/set/{settings.evolution_instance}", payload)
+    return await evo_post(f"webhook/set/{inst(instance)}", payload)
 
 
 @router.get("/status")
-async def status_whatsapp():
+async def status_whatsapp(instance: Optional[str] = None):
     """Verifica status da conexão WhatsApp"""
     try:
-        data = await evo_get(f"instance/connectionState/{settings.evolution_instance}")
+        data = await evo_get(f"instance/connectionState/{inst(instance)}")
         return data
     except Exception as e:
         return {"state": "disconnected", "error": str(e)}
 
 
 @router.get("/qrcode")
-async def gerar_qrcode():
+async def gerar_qrcode(instance: Optional[str] = None):
     """Gera QR Code para conectar WhatsApp"""
     try:
-        data = await evo_get(f"instance/connect/{settings.evolution_instance}")
+        data = await evo_get(f"instance/connect/{inst(instance)}")
         return data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ───────────────────────── Contas de WhatsApp (multi-instância) ─────────────────────────
+
+class NovaConta(BaseModel):
+    nome: str
+
+
+def _normalizar_conta(item: dict) -> dict:
+    """Normaliza um item de instância vindo da Evolution (v1/v2) p/ um formato estável."""
+    item = item or {}
+    interno = item.get("instance") if isinstance(item.get("instance"), dict) else item
+    nome = (
+        interno.get("name")
+        or interno.get("instanceName")
+        or interno.get("instance")
+        or ""
+    )
+    estado = (
+        interno.get("connectionStatus")
+        or interno.get("state")
+        or interno.get("status")
+        or "close"
+    )
+    return {
+        "nome": nome,
+        "estado": estado,
+        "conectado": estado in ("open", "connected"),
+        "padrao": nome == settings.evolution_instance,
+    }
+
+
+@router.get("/instancias")
+async def listar_instancias():
+    """Lista todas as contas (instâncias) de WhatsApp cadastradas na Evolution."""
+    try:
+        data = await evo_get("instance/fetchInstances")
+    except Exception as e:
+        return {"items": [], "error": str(e)}
+
+    bruto = data if isinstance(data, list) else data.get("instances") or data.get("data") or []
+    contas = [_normalizar_conta(it) for it in bruto if isinstance(it, dict)]
+    contas = [c for c in contas if c["nome"]]
+
+    # garante que a instância padrão sempre apareça, mesmo que ainda não exista
+    if not any(c["padrao"] for c in contas):
+        contas.insert(0, {
+            "nome": settings.evolution_instance,
+            "estado": "close",
+            "conectado": False,
+            "padrao": True,
+        })
+    contas.sort(key=lambda c: (not c["padrao"], c["nome"].lower()))
+    return {"items": contas}
+
+
+@router.post("/instancias")
+async def adicionar_instancia(body: NovaConta):
+    """Cria uma nova conta de WhatsApp (instância) na Evolution."""
+    nome = sanitizar_nome_instancia(body.nome)
+    if not nome:
+        raise HTTPException(status_code=400, detail="Informe um nome válido para a conta.")
+    resultado = await _garantir_instancia(nome)
+    return {"ok": True, "instancia": nome, **resultado}
+
+
+@router.delete("/instancias/{nome}")
+async def remover_instancia(nome: str):
+    """Desconecta e remove uma conta de WhatsApp (instância) da Evolution."""
+    alvo = sanitizar_nome_instancia(nome)
+    if not alvo:
+        raise HTTPException(status_code=400, detail="Conta inválida.")
+    if alvo == settings.evolution_instance:
+        raise HTTPException(status_code=400, detail="A conta padrão não pode ser removida.")
+    async with httpx.AsyncClient(timeout=30) as client:
+        # logout (ignora erro se já estiver desconectada) e depois delete
+        await client.delete(f"{settings.evolution_api_url}/instance/logout/{alvo}", headers=evo_headers())
+        r = await client.delete(f"{settings.evolution_api_url}/instance/delete/{alvo}", headers=evo_headers())
+    if r.status_code not in (200, 201):
+        raise HTTPException(status_code=r.status_code, detail=f"Evolution API: {r.text}")
+    return {"ok": True, "removida": alvo}
 
 
 @router.post("/enviar")
@@ -209,7 +307,7 @@ async def enviar_mensagem(body: EnviarMensagem):
 
     try:
         result = await evo_post(
-            f"message/sendText/{settings.evolution_instance}", payload
+            f"message/sendText/{inst(body.instance)}", payload
         )
     except HTTPException as e:
         # Traduz o erro "numero nao existe no WhatsApp" da Evolution
@@ -372,7 +470,7 @@ async def listar_mensagens(conversa_id: str):
         await conn.close()
 
 
-@router.post("/webhook")
+@webhook_router.post("/webhook")
 async def webhook_evolution(payload: dict):
     """Recebe webhooks da Evolution API (mensagens recebidas)"""
     event = (payload.get("event") or "").replace("_", ".").lower()

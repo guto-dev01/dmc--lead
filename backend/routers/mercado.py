@@ -3,20 +3,13 @@ import uuid
 import re
 from typing import List, Optional
 
-import asyncpg
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from database import settings
+from database import get_conn
 from services.market_intelligence import scan_market, _strip_accents
 
 router = APIRouter()
-
-
-async def get_conn():
-    return await asyncpg.connect(
-        settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
-    )
 
 
 def _as_uuid(value):

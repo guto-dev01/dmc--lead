@@ -122,6 +122,22 @@ async def ensure_schema() -> None:
             """,
             "CREATE INDEX IF NOT EXISTS idx_dmc_emp_status ON dmc_empreendimentos(status)",
             "CREATE INDEX IF NOT EXISTS idx_dmc_emp_parceiro ON dmc_empreendimentos(parceiro_id)",
+            # --- Decisores: contatos (donos/sócios/diretores) por empresa ---
+            """
+            CREATE TABLE IF NOT EXISTS contatos (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                empresa_id UUID REFERENCES empresas(id) ON DELETE CASCADE,
+                nome VARCHAR(255) NOT NULL,
+                cargo VARCHAR(100),
+                email VARCHAR(255),
+                telefone VARCHAR(20),
+                whatsapp VARCHAR(20),
+                linkedin VARCHAR(255),
+                notas TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_contatos_empresa ON contatos(empresa_id)",
         ]
         for stmt in statements:
             await conn.execute(stmt)

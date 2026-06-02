@@ -3,22 +3,20 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import date
-import uuid, asyncpg, asyncio, httpx
-from database import settings
+import uuid, asyncio, httpx
+from database import get_conn
 from services.cnpj_enrichment import (
     calculate_completeness_score,
     clean_cnpj,
     fetch_cnpj_data,
     search_cnpj_by_name,
     descobrir_whatsapp,
+    descobrir_emails,
+    melhor_email_empresa,
+    casar_email_dono,
 )
 
 router = APIRouter()
-
-async def get_conn():
-    return await asyncpg.connect(
-        settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
-    )
 
 
 async def log_atividade(conn, empresa_id: uuid.UUID, tipo: str, descricao: str, dados=None):
@@ -483,6 +481,269 @@ async def descobrir_whatsapp_empresa(empresa_id: str):
         await conn.close()
 
 
+class WhatsappBatchRequest(BaseModel):
+    only_missing: bool = True
+    limit: Optional[int] = None
+    concurrency: int = 8
+    deadline_s: float = 15.0
+
+
+@router.post("/discover-whatsapp-all")
+async def descobrir_whatsapp_todas(body: WhatsappBatchRequest):
+    """Pente fino: tenta descobrir o WhatsApp de todas as empresas (em paralelo,
+    com limite de concorrência e de tempo por empresa). Salva os encontrados."""
+    conn = await get_conn()
+    try:
+        where = "WHERE (whatsapp IS NULL OR whatsapp = '')" if body.only_missing else ""
+        rows = await conn.fetch(
+            f"""SELECT id, nome, website, whatsapp FROM empresas
+                {where} ORDER BY score DESC, created_at DESC"""
+        )
+        if body.limit is not None:
+            rows = rows[: body.limit]
+
+        sem = asyncio.Semaphore(max(1, min(body.concurrency, 10)))
+
+        async def processa(r):
+            async with sem:
+                try:
+                    achado = await descobrir_whatsapp(
+                        r["nome"], r["website"], deadline_s=body.deadline_s
+                    )
+                except Exception as exc:
+                    return {"id": str(r["id"]), "nome": r["nome"], "status": "error", "error": str(exc)}
+                if achado and achado.get("whatsapp"):
+                    return {
+                        "id": str(r["id"]), "nome": r["nome"], "status": "ok",
+                        "whatsapp": whatsapp_normalizado(achado["whatsapp"]),
+                        "fonte_whatsapp": achado.get("fonte_whatsapp"),
+                    }
+                return {"id": str(r["id"]), "nome": r["nome"], "status": "nao_encontrado"}
+
+        achados = await asyncio.gather(*[processa(r) for r in rows])
+
+        encontrados = 0
+        items = []
+        for a in achados:
+            if a["status"] == "ok" and a.get("whatsapp"):
+                await conn.execute(
+                    "UPDATE empresas SET whatsapp = $2, updated_at = NOW() WHERE id = $1",
+                    uuid.UUID(a["id"]), a["whatsapp"],
+                )
+                await log_atividade(
+                    conn, uuid.UUID(a["id"]), "discover_whatsapp",
+                    "WhatsApp descoberto em lote (pente fino)",
+                    {"whatsapp": a["whatsapp"], "fonte_whatsapp": a.get("fonte_whatsapp")},
+                )
+                encontrados += 1
+            items.append(a)
+
+        return {
+            "ok": True,
+            "total": len(rows),
+            "encontrados": encontrados,
+            "nao_encontrados": sum(1 for a in achados if a["status"] == "nao_encontrado"),
+            "erros": sum(1 for a in achados if a["status"] == "error"),
+            "items": items,
+        }
+    finally:
+        await conn.close()
+
+
+# ---- Descoberta de e-mails (empresa + donos) ----
+
+def _dominio_site(website: Optional[str]) -> Optional[str]:
+    if not website:
+        return None
+    w = website.strip().lower()
+    w = w.split("//")[-1]            # remove esquema
+    w = w.split("/")[0]             # remove caminho
+    return w.lstrip("www.") or None
+
+
+def _qsa_de(dados_cnpj) -> list:
+    if not dados_cnpj:
+        return []
+    if isinstance(dados_cnpj, str):
+        try:
+            dados_cnpj = json.loads(dados_cnpj)
+        except Exception:
+            return []
+    return (dados_cnpj or {}).get("qsa") or []
+
+
+def _socio_nome_qual(s: dict):
+    nome = (s.get("nome_socio") or s.get("nome") or "").strip()
+    qual = (s.get("qualificacao_socio") or s.get("qual") or "").strip() or "Sócio/Administrador"
+    return nome, qual
+
+
+async def _upsert_contato_dono(conn, empresa_id: uuid.UUID, nome: str, cargo: str, email: str) -> bool:
+    """Salva/atualiza o e-mail do dono na tabela contatos. Retorna True se gravou."""
+    if not nome or not email:
+        return False
+    existente = await conn.fetchrow(
+        "SELECT id, email FROM contatos WHERE empresa_id = $1 AND lower(nome) = lower($2) LIMIT 1",
+        empresa_id, nome,
+    )
+    if existente:
+        if (existente["email"] or "").lower() == email.lower():
+            return False
+        await conn.execute(
+            "UPDATE contatos SET email = COALESCE(NULLIF(email, ''), $2) WHERE id = $1",
+            existente["id"], email,
+        )
+        return True
+    await conn.execute(
+        """INSERT INTO contatos (empresa_id, nome, cargo, email)
+           VALUES ($1, $2, $3, $4)""",
+        empresa_id, nome, cargo, email,
+    )
+    return True
+
+
+async def _descobrir_emails_empresa(conn, row, deadline_s: float = 18.0) -> dict:
+    """Descobre e-mails da empresa e dos donos (QSA) e salva. row precisa ter
+    id, nome, website, email, dados_cnpj."""
+    res = await descobrir_emails(row["nome"], row["website"], deadline_s=deadline_s)
+    emails = res.get("emails") or []
+    if not emails:
+        return {"emails": [], "email_empresa": None, "donos": []}
+
+    dominio = _dominio_site(row["website"])
+    email_empresa = melhor_email_empresa(emails, dominio)
+
+    # salva o e-mail da empresa só se ainda não houver um
+    if email_empresa:
+        await conn.execute(
+            "UPDATE empresas SET email = COALESCE(NULLIF(email, ''), $2), updated_at = NOW() WHERE id = $1",
+            row["id"], email_empresa,
+        )
+
+    # casa e-mails com os donos do QSA e salva como contato
+    donos = []
+    for s in _qsa_de(row["dados_cnpj"]):
+        nome, qual = _socio_nome_qual(s)
+        if not nome:
+            continue
+        em = casar_email_dono(nome, emails)
+        if em:
+            await _upsert_contato_dono(conn, row["id"], nome, qual, em)
+            donos.append({"nome": nome, "qualificacao": qual, "email": em})
+
+    return {"emails": emails, "email_empresa": email_empresa, "donos": donos}
+
+
+@router.post("/{empresa_id}/discover-email")
+async def descobrir_email_empresa(empresa_id: str):
+    """Procura no site os e-mails da empresa e dos donos (QSA) e salva."""
+    conn = await get_conn()
+    try:
+        row = await conn.fetchrow(
+            "SELECT id, nome, website, email, dados_cnpj FROM empresas WHERE id = $1",
+            uuid.UUID(empresa_id),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Empresa não encontrada")
+
+        resultado = await _descobrir_emails_empresa(conn, row, deadline_s=22.0)
+        if not resultado["emails"]:
+            raise HTTPException(status_code=404, detail="Nenhum e-mail encontrado para esta empresa")
+
+        await log_atividade(
+            conn, uuid.UUID(empresa_id), "discover_email",
+            "E-mails descobertos no site da empresa",
+            {"email_empresa": resultado["email_empresa"],
+             "donos": resultado["donos"], "total": len(resultado["emails"])},
+        )
+        empresa = await conn.fetchrow("SELECT * FROM empresas WHERE id = $1", uuid.UUID(empresa_id))
+        return {"ok": True, "empresa": dict(empresa), **resultado}
+    finally:
+        await conn.close()
+
+
+class EmailBatchRequest(BaseModel):
+    only_missing: bool = True
+    limit: Optional[int] = None
+    concurrency: int = 8
+    deadline_s: float = 15.0
+
+
+@router.post("/discover-email-all")
+async def descobrir_email_todas(body: EmailBatchRequest):
+    """Pente fino: descobre e-mails (empresa + donos) de todas as empresas."""
+    conn = await get_conn()
+    try:
+        where = "WHERE (email IS NULL OR email = '')" if body.only_missing else ""
+        rows = await conn.fetch(
+            f"""SELECT id, nome, website, email, dados_cnpj FROM empresas
+                {where} ORDER BY score DESC, created_at DESC"""
+        )
+        if body.limit is not None:
+            rows = rows[: body.limit]
+
+        sem = asyncio.Semaphore(max(1, min(body.concurrency, 10)))
+
+        async def processa(r):
+            async with sem:
+                try:
+                    res = await descobrir_emails(r["nome"], r["website"], deadline_s=body.deadline_s)
+                except Exception as exc:
+                    return {"id": r["id"], "nome": r["nome"], "status": "error", "error": str(exc)}
+                emails = res.get("emails") or []
+                if not emails:
+                    return {"id": r["id"], "nome": r["nome"], "status": "nao_encontrado"}
+                dominio = _dominio_site(r["website"])
+                return {
+                    "id": r["id"], "nome": r["nome"], "status": "ok",
+                    "email_empresa": melhor_email_empresa(emails, dominio),
+                    "emails": emails, "dados_cnpj": r["dados_cnpj"],
+                }
+
+        achados = await asyncio.gather(*[processa(r) for r in rows])
+
+        empresas_ok = donos_ok = 0
+        items = []
+        for a in achados:
+            if a["status"] == "ok":
+                eid = a["id"]
+                if a.get("email_empresa"):
+                    await conn.execute(
+                        "UPDATE empresas SET email = COALESCE(NULLIF(email, ''), $2), updated_at = NOW() WHERE id = $1",
+                        eid, a["email_empresa"],
+                    )
+                    empresas_ok += 1
+                donos = []
+                for s in _qsa_de(a.get("dados_cnpj")):
+                    nome, qual = _socio_nome_qual(s)
+                    if not nome:
+                        continue
+                    em = casar_email_dono(nome, a["emails"])
+                    if em and await _upsert_contato_dono(conn, eid, nome, qual, em):
+                        donos.append({"nome": nome, "email": em})
+                        donos_ok += 1
+                await log_atividade(
+                    conn, eid, "discover_email", "E-mails descobertos em lote",
+                    {"email_empresa": a.get("email_empresa"), "donos": donos},
+                )
+                items.append({"id": str(eid), "nome": a["nome"], "status": "ok",
+                              "email_empresa": a.get("email_empresa"), "donos": donos})
+            else:
+                items.append({"id": str(a["id"]), "nome": a["nome"], "status": a["status"]})
+
+        return {
+            "ok": True,
+            "total": len(rows),
+            "emails_empresa": empresas_ok,
+            "emails_donos": donos_ok,
+            "nao_encontrados": sum(1 for a in achados if a["status"] == "nao_encontrado"),
+            "erros": sum(1 for a in achados if a["status"] == "error"),
+            "items": items,
+        }
+    finally:
+        await conn.close()
+
+
 @router.post("/{empresa_id}/enrich-auto")
 async def enriquecer_automaticamente(empresa_id: str):
     """Descobre CNPJ por nome quando necessário e enriquece com o máximo de dados."""
@@ -529,6 +790,14 @@ async def enriquecer_automaticamente(empresa_id: str):
             {"cnpj": cnpj, "fonte": data.get("fonte"), "descoberta": descoberta},
         )
 
+        # Captação de e-mails: empresa + donos (QSA) a partir do site
+        emails_info = {"emails": [], "email_empresa": None, "donos": []}
+        try:
+            emails_info = await _descobrir_emails_empresa(conn, row, deadline_s=18.0)
+            row = await conn.fetchrow("SELECT * FROM empresas WHERE id = $1", uuid.UUID(empresa_id))
+        except Exception:
+            pass
+
         return {
             "ok": True,
             "empresa": dict(row),
@@ -536,6 +805,9 @@ async def enriquecer_automaticamente(empresa_id: str):
             "qsa": data.get("qsa", []),
             "descoberta": descoberta,
             "fonte": data.get("fonte"),
+            "emails": emails_info["emails"],
+            "email_empresa": emails_info["email_empresa"],
+            "emails_donos": emails_info["donos"],
         }
     finally:
         await conn.close()

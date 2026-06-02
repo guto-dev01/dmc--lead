@@ -1,0 +1,205 @@
+<!-- AD-TECH · Login premium · 2-col layout -->
+<section
+  class="auth-page"
+  role="main"
+  aria-label="Página de login"
+>
+  <!-- Background ambiente -->
+  <div class="auth-bg" aria-hidden="true">
+    <div class="auth-bg__grid"></div>
+    <div class="auth-bg__beam"></div>
+    <div class="auth-bg__glow auth-bg__glow--teal"></div>
+    <div class="auth-bg__glow auth-bg__glow--green"></div>
+    <div class="auth-bg__vignette"></div>
+    <div class="auth-bg__noise"></div>
+  </div>
+
+  <div class="auth-shell">
+    <!-- ───────────── COLUNA ESQUERDA · Brand ───────────── -->
+    <aside class="brand-panel" aria-label="Apresentação da marca">
+      <div class="brand-panel__inner">
+        <div class="brand-mark">
+          <div class="brand-mark__halo" aria-hidden="true"></div>
+          <img
+            src="assets/images/adtech-logo.webp"
+            alt="AD-TECH"
+            class="brand-mark__logo"
+            loading="lazy"
+          />
+        </div>
+
+        <div class="brand-heading">
+          <span class="brand-eyebrow">
+            <span class="brand-eyebrow__dot" aria-hidden="true"></span>
+            Plataforma jurídica inteligente
+          </span>
+          <h1 class="brand-title">AD-TECH</h1>
+          <p class="brand-subtitle">
+            Inteligência artificial aplicada à gestão jurídica e cartorária.
+          </p>
+        </div>
+
+        <ul class="trust-list" role="list">
+          <li class="trust-row">
+            <span class="trust-row__icon">
+              <i class="fas fa-shield-halved" aria-hidden="true"></i>
+            </span>
+            <div class="trust-row__text">
+              <strong>Segurança de ponta</strong>
+              <span>Criptografia ponta a ponta</span>
+            </div>
+          </li>
+          <li class="trust-row">
+            <span class="trust-row__icon">
+              <i class="fas fa-fingerprint" aria-hidden="true"></i>
+            </span>
+            <div class="trust-row__text">
+              <strong>Dados protegidos</strong>
+              <span>Conformidade LGPD</span>
+            </div>
+          </li>
+          <li class="trust-row">
+            <span class="trust-row__icon">
+              <i class="fas fa-bolt" aria-hidden="true"></i>
+            </span>
+            <div class="trust-row__text">
+              <strong>Disponibilidade 99,9%</strong>
+              <span>Infraestrutura em alta disponibilidade</span>
+            </div>
+          </li>
+        </ul>
+
+        <footer class="brand-footnote">
+          <span class="brand-footnote__pulse" aria-hidden="true"></span>
+          © {{ anoAtual }} Complexo DMC · Todos os direitos reservados
+        </footer>
+      </div>
+    </aside>
+
+    <!-- ───────────── COLUNA DIREITA · Card login ───────────── -->
+    <main class="auth-card" aria-label="Formulário de acesso">
+      <div class="auth-card__corner" aria-hidden="true"></div>
+      <header class="auth-card__head">
+        <span class="auth-card__badge">
+          <i class="fas fa-shield-halved" aria-hidden="true"></i>
+          Conexão segura
+        </span>
+        <h2>Bem-vindo de volta</h2>
+        <p>Acesse sua conta para continuar.</p>
+      </header>
+
+      @if (errorMessage) {
+        <div class="auth-alert" role="alert" aria-live="assertive">
+          <i class="fas fa-circle-exclamation" aria-hidden="true"></i>
+          <span>{{ errorMessage }}</span>
+        </div>
+      }
+
+      <form (ngSubmit)="onSubmit()" class="auth-form" novalidate>
+        <!-- E-mail -->
+        <div class="field" [class.field--error]="hasError('email')">
+          <label for="email" class="field__label">E-mail</label>
+          <div class="field__control">
+            <i class="fas fa-envelope field__icon" aria-hidden="true"></i>
+            <input
+              type="email"
+              id="email"
+              name="email"
+              [(ngModel)]="loginForm.email"
+              class="field__input"
+              placeholder="seu@email.com"
+              autocomplete="email"
+              required
+            />
+          </div>
+          @if (hasError('email')) {
+            <span class="field__error">{{ getError('email') }}</span>
+          }
+        </div>
+
+        <!-- Senha -->
+        <div class="field" [class.field--error]="hasError('password')">
+          <div class="field__label-row">
+            <label for="password" class="field__label">Senha</label>
+            <button
+              type="button"
+              class="field__link"
+              (click)="irParaReset()"
+              tabindex="0"
+            >
+              Esqueceu?
+            </button>
+          </div>
+          <div class="field__control">
+            <i class="fas fa-lock field__icon" aria-hidden="true"></i>
+            <input
+              [type]="showPassword ? 'text' : 'password'"
+              id="password"
+              name="password"
+              [(ngModel)]="loginForm.password"
+              class="field__input field__input--has-action"
+              placeholder="••••••••"
+              autocomplete="current-password"
+              required
+            />
+            <button
+              type="button"
+              class="field__action"
+              (click)="showPassword = !showPassword"
+              [attr.aria-label]="showPassword ? 'Ocultar senha' : 'Mostrar senha'"
+              tabindex="-1"
+            >
+              <i class="fas" [class.fa-eye]="!showPassword" [class.fa-eye-slash]="showPassword" aria-hidden="true"></i>
+            </button>
+          </div>
+          @if (hasError('password')) {
+            <span class="field__error">{{ getError('password') }}</span>
+          }
+        </div>
+
+        <!-- Ações -->
+        <button
+          type="submit"
+          class="btn btn--primary"
+          [disabled]="isLoading || isSendingLink"
+        >
+          @if (isLoading) {
+            <span class="btn__spinner" aria-hidden="true"></span>
+            <span class="btn__label">Entrando...</span>
+          } @else {
+            <span class="btn__label">Entrar</span>
+            <i class="fas fa-arrow-right btn__icon-right" aria-hidden="true"></i>
+          }
+        </button>
+
+        <button
+          type="button"
+          class="btn btn--ghost"
+          [disabled]="isLoading || isSendingLink"
+          (click)="onSendMagicLink()"
+        >
+          @if (isSendingLink) {
+            <span class="btn__spinner btn__spinner--ghost" aria-hidden="true"></span>
+            <span class="btn__label">Enviando link...</span>
+          } @else {
+            <i class="fas fa-envelope-open-text btn__icon-left" aria-hidden="true"></i>
+            <span class="btn__label">Entrar com link por e-mail</span>
+          }
+        </button>
+      </form>
+
+      <div class="auth-divider"><span>ou</span></div>
+
+      <p class="auth-signup">
+        Não tem uma conta?
+        <a
+          class="auth-signup__link"
+          (click)="irParaCadastro()"
+          (keydown.enter)="irParaCadastro()"
+          tabindex="0"
+          role="link"
+        >Cadastre-se</a>
+      </p>
+    </main>
+  </div>
+</section>

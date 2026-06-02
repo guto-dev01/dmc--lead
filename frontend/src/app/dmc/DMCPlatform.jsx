@@ -3,9 +3,9 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import dynamic from "next/dynamic";
 import {
-  Building2, MapPin, TrendingUp, Layers, ShieldCheck, Users, Briefcase,
+  Building2, MapPin, ShieldCheck, Users, Briefcase,
   Search, Plus, Pencil, Trash2, X, ExternalLink, CheckCircle2, FileText,
-  Phone, Mail, Target, Scale,
+  Phone, Mail, Scale,
 } from "lucide-react";
 
 const DMCMapa = dynamic(() => import("./DMCMapa"), {
@@ -50,7 +50,6 @@ async function api(path, opts = {}) {
 
 /* Seções expostas para o menu lateral do ImobPro */
 export const DMC_NAV = [
-  { key: "dashboard", label: "Visão Geral" },
   { key: "empreendimentos", label: "Empreendimentos" },
   { key: "mapa", label: "Mapa de Ativos" },
   { key: "esteira", label: "Esteira de Aquisição" },
@@ -106,7 +105,7 @@ function fromEmp(e) {
 }
 
 export default function DMCPlatform({ secaoControlada }) {
-  const secao = secaoControlada || "dashboard";
+  const secao = secaoControlada || "empreendimentos";
   const [parceiros, setParceiros] = useState([]);
   const [emps, setEmps] = useState([]);
   const [summary, setSummary] = useState(null);
@@ -179,6 +178,21 @@ export default function DMCPlatform({ secaoControlada }) {
     catch (err) { alert("Erro: " + err.message); }
   };
 
+  const [importando, setImportando] = useState(false);
+  const importarEmpresas = async () => {
+    if (!confirm("Importar todas as empresas cadastradas como empreendimentos? Empresas já importadas (mesmo nome) são ignoradas.")) return;
+    setImportando(true);
+    try {
+      const r = await api("/api/dmc/empreendimentos/importar-empresas", { method: "POST" });
+      alert(`${r.criados} empresa(s) importada(s).${r.pulados ? ` ${r.pulados} já existia(m).` : ""}`);
+      await carregar();
+    } catch (err) {
+      alert("Erro ao importar: " + err.message);
+    } finally {
+      setImportando(false);
+    }
+  };
+
   const novoParceiro = async () => {
     const nome = prompt("Nome do novo parceiro intermediador:");
     if (!nome) return;
@@ -200,13 +214,20 @@ export default function DMCPlatform({ secaoControlada }) {
           <h2 className="text-2xl font-bold text-white mt-1">{titulo}</h2>
         </div>
         {(secao === "empreendimentos" || secao === "mapa") && (
-          <button onClick={abrirNovo} className="tech-button rounded-xl px-4 py-2.5 text-sm font-bold flex items-center gap-2">
-            <Plus size={16} /> Novo empreendimento
-          </button>
+          <div className="flex items-center gap-2">
+            {secao === "empreendimentos" && (
+              <button onClick={importarEmpresas} disabled={importando}
+                className="rounded-xl px-4 py-2.5 text-sm font-bold flex items-center gap-2 border border-amber-400/40 text-amber-300 hover:bg-amber-400/10 disabled:opacity-60">
+                <Building2 size={16} /> {importando ? "Importando…" : "Importar empresas"}
+              </button>
+            )}
+            <button onClick={abrirNovo} className="tech-button rounded-xl px-4 py-2.5 text-sm font-bold flex items-center gap-2">
+              <Plus size={16} /> Novo empreendimento
+            </button>
+          </div>
         )}
       </div>
 
-      {secao === "dashboard" && <Dashboard summary={summary} loading={loading} onNovo={abrirNovo} />}
       {secao === "empreendimentos" && (
         <Empreendimentos
           lista={lista} parceiros={parceiros} loading={loading}
@@ -229,62 +250,6 @@ export default function DMCPlatform({ secaoControlada }) {
         />
       )}
       {detalhe && <DetalheModal e={detalhe} onFechar={() => setDetalhe(null)} onEdit={abrirEdicao} />}
-    </div>
-  );
-}
-
-/* ---------- VISÃO GERAL ---------- */
-function Dashboard({ summary, loading, onNovo }) {
-  if (loading && !summary) return <Carregando />;
-  if (!summary || summary.qtd === 0)
-    return <Vazio onNovo={onNovo} texto="Nenhum empreendimento cadastrado ainda." />;
-  const kpis = [
-    { label: "Volume do portfólio", valor: fmtCompact(summary.total_valor), icon: TrendingUp, accent: "#00e7fc" },
-    { label: "Empreendimentos", valor: summary.qtd, icon: Building2, accent: "#00ff6a" },
-    { label: "Área total", valor: fmtNum(summary.area_total, " m²"), icon: Layers, accent: "#e7a012" },
-    { label: "Cap rate médio", valor: summary.cap_medio ? `${summary.cap_medio}%` : "—", icon: Target, accent: "#b06ddf" },
-    { label: "Em estágio avançado", valor: summary.em_closing, icon: Briefcase, accent: "#ff7a7a" },
-  ];
-  return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-        {kpis.map((k) => (
-          <div key={k.label} className="surface-strong rounded-2xl p-4">
-            <div className="flex items-center justify-between">
-              <p className="text-[10px] uppercase tracking-wider text-slate-500">{k.label}</p>
-              <k.icon size={16} style={{ color: k.accent }} />
-            </div>
-            <p className="text-xl font-bold text-white mt-3">{k.valor}</p>
-          </div>
-        ))}
-      </div>
-      <div className="grid lg:grid-cols-2 gap-4">
-        <BarList titulo="Distribuição por tipologia" dados={summary.por_tipo} total={summary.qtd} />
-        <BarList titulo="Por parceiro intermediador" dados={summary.por_parceiro} total={summary.qtd} />
-      </div>
-    </div>
-  );
-}
-
-function BarList({ titulo, dados, total }) {
-  return (
-    <div className="surface-strong rounded-2xl p-5">
-      <p className="text-white font-semibold text-sm mb-4">{titulo}</p>
-      <div className="space-y-3">
-        {(dados || []).map((d) => (
-          <div key={d.label}>
-            <div className="flex justify-between text-xs mb-1">
-              <span className="text-slate-300">{d.label}</span>
-              <span className="text-slate-500">{d.total}</span>
-            </div>
-            <div className="h-2 bg-white/5 rounded-full overflow-hidden">
-              <div className="h-full bg-gradient-to-r from-[#00e7fc] to-[#00ff6a] rounded-full"
-                style={{ width: `${Math.min(100, (d.total / Math.max(1, total)) * 100)}%` }} />
-            </div>
-          </div>
-        ))}
-        {(!dados || dados.length === 0) && <p className="text-slate-500 text-sm">Sem dados.</p>}
-      </div>
     </div>
   );
 }
@@ -388,6 +353,7 @@ function SecaoMapa({ emps, onSelect }) {
   const [empresas, setEmpresas] = useState([]);
   const [info, setInfo] = useState({ sem_coords: 0, com_coords: 0 });
   const [geocod, setGeocod] = useState(false);
+  const [empresaSel, setEmpresaSel] = useState(null);
 
   const carregarEmpresas = useCallback(async () => {
     try {
@@ -418,6 +384,7 @@ function SecaoMapa({ emps, onSelect }) {
       lat: Number(e.lat) + rad * Math.cos(ang),
       lng: Number(e.lng) + rad * Math.sin(ang),
       cor, valor_venda: 0, label: `${rotulo}${e.bairro ? ` · ${e.bairro}` : ""}`,
+      onClick: () => setEmpresaSel(e),
     };
   });
   // Empreendimentos DMC (se houver): cor do parceiro
@@ -451,6 +418,105 @@ function SecaoMapa({ emps, onSelect }) {
         {emps.filter((e) => e.lat && e.lng).length > 0 ? ` · ${emps.filter((e) => e.lat && e.lng).length} empreendimento(s) DMC` : ""}.
         {markers.length === 0 && " Clique em “Localizar empresas” para posicioná-las pelo endereço."}
       </p>
+      {empresaSel && <EmpresaMapaModal empresa={empresaSel} onFechar={() => setEmpresaSel(null)} />}
+    </div>
+  );
+}
+
+/* Modal acionado ao clicar numa empresa no Mapa de Ativos.
+   Busca o detalhe completo (/api/empresas/{id}: dados + contatos do cliente). */
+function EmpresaMapaModal({ empresa, onFechar }) {
+  const [dados, setDados] = useState(empresa);
+  const [carregando, setCarregando] = useState(true);
+
+  useEffect(() => {
+    let vivo = true;
+    setCarregando(true);
+    api(`/api/empresas/${empresa.id}`)
+      .then((d) => { if (vivo) setDados(d); })
+      .catch((e) => console.error(e))
+      .finally(() => { if (vivo) setCarregando(false); });
+    return () => { vivo = false; };
+  }, [empresa.id]);
+
+  const [cor, rotulo] = statusBucket(dados.status_prospeccao);
+  const contatos = dados.contatos || [];
+  const endereco = [
+    [dados.logradouro, dados.numero].filter(Boolean).join(", "),
+    dados.bairro || dados.regiao, dados.municipio, dados.uf,
+  ].filter(Boolean).join(" · ");
+  const waLink = dados.whatsapp ? `https://wa.me/${String(dados.whatsapp).replace(/\D/g, "")}` : null;
+
+  const item = (label, valor, render) => (
+    <div>
+      <div className="text-[10px] uppercase tracking-wider text-slate-500">{label}</div>
+      <div className="text-sm mt-0.5 text-slate-200 break-words">{render ? render : (valor || "—")}</div>
+    </div>
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-start justify-center p-4 overflow-y-auto" onClick={onFechar}>
+      <div className="surface-strong rounded-2xl w-full max-w-2xl my-6 border border-white/10" onClick={(ev) => ev.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
+          <div className="flex items-center gap-3">
+            <span className="w-3 h-3 rounded-full" style={{ background: cor }} title={rotulo} />
+            <div>
+              <h3 className="text-white font-semibold text-lg leading-tight">{dados.nome}</h3>
+              <p className="text-slate-500 text-xs">
+                {[dados.tipo, dados.eixo || dados.regiao].filter(Boolean).join(" · ") || "Cliente"}
+                {carregando ? " · carregando…" : ""}
+              </p>
+            </div>
+          </div>
+          <button onClick={onFechar} className="text-slate-400 hover:text-white"><X size={18} /></button>
+        </div>
+
+        <div className="p-5 grid grid-cols-2 sm:grid-cols-3 gap-4">
+          {item("Status", null, <span className="font-semibold" style={{ color: cor }}>{rotulo}</span>)}
+          {item("Prioridade", dados.prioridade)}
+          {item("Cargo-alvo", dados.cargo_alvo)}
+          {item("Telefone", null, dados.telefone
+            ? <a href={`tel:${dados.telefone}`} className="text-[#00e7fc] hover:underline flex items-center gap-1.5"><Phone size={13} />{dados.telefone}</a>
+            : "—")}
+          {item("WhatsApp", null, waLink
+            ? <a href={waLink} target="_blank" rel="noreferrer" className="text-[#00ff6a] hover:underline flex items-center gap-1.5"><Phone size={13} />{dados.whatsapp}</a>
+            : "—")}
+          {item("E-mail", null, dados.email
+            ? <a href={`mailto:${dados.email}`} className="text-[#00e7fc] hover:underline flex items-center gap-1.5 break-all"><Mail size={13} />{dados.email}</a>
+            : "—")}
+          {item("Website", null, dados.website
+            ? <a href={dados.website.startsWith("http") ? dados.website : `https://${dados.website}`} target="_blank" rel="noreferrer" className="text-[#00e7fc] hover:underline flex items-center gap-1.5 break-all"><ExternalLink size={13} />{dados.website}</a>
+            : "—")}
+          {item("CNPJ", dados.cnpj)}
+          {item("Administradora", dados.administradora)}
+          <div className="col-span-full">{item("Localização", null,
+            <span className="flex items-start gap-1.5"><MapPin size={13} className="mt-0.5 shrink-0 text-slate-400" />{endereco || "—"}</span>)}</div>
+          {dados.proxima_acao && <div className="col-span-full">{item("Próxima ação", dados.proxima_acao)}</div>}
+          {dados.observacoes && <div className="col-span-full">{item("Observações", dados.observacoes)}</div>}
+        </div>
+
+        <div className="px-5 pb-5">
+          <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-2 flex items-center gap-1.5"><Users size={12} /> Contatos do cliente ({contatos.length})</div>
+          {contatos.length === 0 ? (
+            <p className="text-slate-600 text-sm">Nenhum contato cadastrado. Use os Decisores para enriquecer este cliente.</p>
+          ) : (
+            <div className="space-y-2">
+              {contatos.map((c) => (
+                <div key={c.id} className="surface-soft rounded-xl px-3 py-2 flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-sm text-white">{c.nome}{c.cargo ? <span className="text-slate-500"> · {c.cargo}</span> : ""}</div>
+                    <div className="text-xs text-slate-400 flex flex-wrap gap-3 mt-0.5">
+                      {c.telefone && <a href={`tel:${c.telefone}`} className="hover:text-[#00e7fc] flex items-center gap-1"><Phone size={11} />{c.telefone}</a>}
+                      {c.whatsapp && <a href={`https://wa.me/${String(c.whatsapp).replace(/\D/g, "")}`} target="_blank" rel="noreferrer" className="hover:text-[#00ff6a] flex items-center gap-1"><Phone size={11} />{c.whatsapp}</a>}
+                      {c.email && <a href={`mailto:${c.email}`} className="hover:text-[#00e7fc] flex items-center gap-1 break-all"><Mail size={11} />{c.email}</a>}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

@@ -59,6 +59,24 @@ services:
         sync: false
       - key: SERPER_API_KEY
         sync: false
+      # Hunter.io — e-mail corporativo dos decisores (preencha no painel da Render)
+      - key: HUNTER_API_KEY
+        sync: false
+      # Disparo de e-mail (SMTP) — preencha no painel da Render
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      - key: SMTP_FROM_NOME
+        value: Complexo DMC
+      - key: SMTP_USE_TLS
+        value: "true"
 
   # ----- Frontend (Next.js) -----
   - type: web

@@ -79,6 +79,14 @@ services:
       GOOGLE_CSE_ID: ${GOOGLE_CSE_ID:-}
       SERPER_API_KEY: ${SERPER_API_KEY:-}
       BRAVE_API_KEY: ${BRAVE_API_KEY:-}
+      HUNTER_API_KEY: ${HUNTER_API_KEY:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_FROM_NOME: ${SMTP_FROM_NOME:-Complexo DMC}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
     ports:
       - "8001:8000"
     depends_on:

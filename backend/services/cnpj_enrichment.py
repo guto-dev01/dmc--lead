@@ -84,9 +84,11 @@ def decode_bing_url(url: str) -> str:
 
 # Links diretos de WhatsApp (melhor fonte): wa.me / api.whatsapp.com/send?phone=
 WA_LINK_RE = re.compile(
-    r"(?:wa\.me/|api\.whatsapp\.com/send\?phone=|whatsapp\.com/send\?phone=)(\+?\d[\d]{8,16})",
+    r"(?:wa\.me/|wa\.link/|api\.whatsapp\.com/send/?\?phone=|web\.whatsapp\.com/send/?\?phone=|whatsapp\.com/send/?\?phone=)(\+?\d[\d]{8,16})",
     re.I,
 )
+# Links tel: (href="tel:+55...") — boa fonte quando o número está num botão de ligação
+TEL_HREF_RE = re.compile(r"tel:(\+?[\d\s().\-]{8,20})", re.I)
 # Celular BR no texto: (DD) 9XXXX-XXXX
 CEL_RE = re.compile(r"\(?\b(\d{2})\)?[\s.\-]?9\d{4}[\s.\-]?\d{4}\b")
 
@@ -117,13 +119,21 @@ def whatsapp_de_telefones(*telefones) -> Optional[str]:
 
 
 def extrair_whatsapp(texto: str) -> Optional[str]:
-    """Procura um numero de WhatsApp (link wa.me ou celular) em um texto/html."""
+    """Procura um numero de WhatsApp (link wa.me, tel: ou celular) em um texto/html."""
     if not texto:
         return None
+    # 1) Link direto de WhatsApp = melhor evidência. Aceita celular (13) e fixo
+    #    de WhatsApp Business (12), pois o link em si já confirma que é WhatsApp.
     for m in WA_LINK_RE.finditer(texto):
+        e164 = _para_e164_br(m.group(1))
+        if e164 and len(_so_digitos(e164)) in (12, 13):
+            return _so_digitos(e164)
+    # 2) Link tel: que seja celular (provável WhatsApp)
+    for m in TEL_HREF_RE.finditer(texto):
         e164 = _para_e164_br(m.group(1))
         if e164 and len(_so_digitos(e164)) == 13:
             return _so_digitos(e164)
+    # 3) Celular escrito no texto da página
     for m in CEL_RE.finditer(texto):
         e164 = _para_e164_br(m.group(0))
         if e164:
@@ -131,47 +141,337 @@ def extrair_whatsapp(texto: str) -> Optional[str]:
     return None
 
 
-def _descobrir_whatsapp_sync(company_name: str, website: Optional[str] = None) -> Optional[dict]:
-    """Varre o site da empresa (home + paginas de contato) atras de um WhatsApp."""
+# Caminhos comuns onde empresas publicam contato/WhatsApp
+CONTACT_PATHS = [
+    "", "contato", "contato/", "fale-conosco", "fale-conosco/", "contact",
+    "contato-2", "atendimento", "quem-somos", "sobre", "institucional",
+]
+
+
+def _candidatos_url(company_name: str, website: Optional[str]) -> list[str]:
+    """Monta a lista de URLs a varrer. Prioriza o site cadastrado e, como rede
+    de segurança (site errado/fora do ar), também tenta domínios adivinhados
+    pelo nome da empresa."""
     urls: list[str] = []
     if website:
         base = website if website.startswith("http") else f"https://{website}"
         base = base.rstrip("/")
-        urls += [base + "/", base + "/contato", base + "/fale-conosco"]
+        urls += [f"{base}/{p}" if p else f"{base}/" for p in CONTACT_PATHS]
     for slug in _guess_company_domains(company_name):
         for template in ("https://{s}.com.br/", "https://www.{s}.com.br/", "https://{s}.com/"):
             urls.append(template.format(s=slug))
+    # remove duplicados preservando ordem
+    vistos, out = set(), []
+    for u in urls:
+        if u not in vistos:
+            vistos.add(u); out.append(u)
+    return out
 
+
+def _dominio_da_empresa(url: str, company_name: str) -> bool:
+    """True se o host parece ser o site OFICIAL da empresa (e não um portal/
+    agregador que apenas menciona o nome). Usa só slugs específicos (>= 7
+    caracteres) para evitar falsos positivos com tokens genéricos curtos."""
+    host = urlparse(url).netloc.lower()
+    especificos = [s for s in _guess_company_domains(company_name) if len(s) >= 7]
+    return any(slug in host for slug in especificos)
+
+
+def _links_resultado_busca(html: str) -> list[str]:
+    """Extrai os links de resultado de uma SERP do Bing/DuckDuckGo."""
+    soup = BeautifulSoup(html, "html.parser")
+    out, vistos = [], set()
+    for a in soup.select("a[href]"):
+        href = decode_bing_url(a.get("href", ""))
+        # DuckDuckGo embrulha o destino em /l/?uddg=<url>
+        if "/l/?" in href and "uddg=" in href:
+            qs = parse_qs(urlparse(href).query)
+            if qs.get("uddg"):
+                href = unquote(qs["uddg"][0])
+        if not href.startswith("http"):
+            continue
+        host = urlparse(href).netloc.lower()
+        if any(b in host for b in ("bing.com", "duckduckgo.com", "microsoft.com", "msn.com", "go.microsoft")):
+            continue
+        if href not in vistos:
+            vistos.add(href); out.append(href)
+    return out
+
+
+async def _whatsapp_por_busca(client, company_name: str, loop, fim) -> Optional[dict]:
+    """Fallback: pesquisa o nome da empresa num buscador e abre os primeiros
+    resultados procurando um WhatsApp, validando a relevância da página."""
+    engines = ("https://www.bing.com/search?q=", "https://duckduckgo.com/html/?q=")
+    queries = (f"{company_name} whatsapp", f"{company_name} contato whatsapp")
     visitados: set[str] = set()
-    for url in urls:
-        if url in visitados:
-            continue
-        visitados.add(url)
-        try:
-            html = _fetch_url_sync(url)
-        except Exception:
-            continue
-        texto = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
-        whats = extrair_whatsapp(html + " " + texto)
-        if whats:
-            return {"whatsapp": whats, "fonte_whatsapp": url}
-        for link in _candidate_internal_links(html, url)[:4]:
-            if link in visitados:
-                continue
-            visitados.add(link)
+    for engine in engines:
+        for query in queries:
+            if loop.time() >= fim:
+                return None
             try:
-                ihtml = _fetch_url_sync(link)
+                resp = await client.get(engine + urllib.parse.quote(query))
+                serp = resp.text
             except Exception:
                 continue
-            itexto = BeautifulSoup(ihtml, "html.parser").get_text(" ", strip=True)
-            whats = extrair_whatsapp(ihtml + " " + itexto)
-            if whats:
-                return {"whatsapp": whats, "fonte_whatsapp": link}
+            for href in _links_resultado_busca(serp)[:5]:
+                if loop.time() >= fim:
+                    return None
+                if href in visitados:
+                    continue
+                visitados.add(href)
+                try:
+                    phtml = await _fetch_html_async(client, href)
+                except Exception:
+                    continue
+                if not phtml:
+                    continue
+                # Só confia em página do domínio oficial da empresa (evita
+                # pegar número de portal/agregador ou de empresa homônima).
+                if not _dominio_da_empresa(href, company_name):
+                    continue
+                ptexto = BeautifulSoup(phtml, "html.parser").get_text(" ", strip=True)
+                whats = extrair_whatsapp(phtml + " " + ptexto)
+                if whats:
+                    return {"whatsapp": whats, "fonte_whatsapp": href}
     return None
 
 
-async def descobrir_whatsapp(company_name: str, website: Optional[str] = None) -> Optional[dict]:
-    return await asyncio.to_thread(_descobrir_whatsapp_sync, company_name, website)
+async def _fetch_html_async(client: "httpx.AsyncClient", url: str) -> str:
+    resp = await client.get(url)
+    resp.raise_for_status()
+    ctype = (resp.headers.get("content-type") or "").lower()
+    if "html" not in ctype and "text" not in ctype and ctype:
+        return ""
+    return resp.text
+
+
+async def descobrir_whatsapp(
+    company_name: str, website: Optional[str] = None, deadline_s: float = 25.0
+) -> Optional[dict]:
+    """Varre o site da empresa (home + paginas de contato + links internos)
+    atras de um WhatsApp. Usa httpx seguindo redirects e tolerante a SSL.
+    Para tudo apos `deadline_s` segundos para nao travar a requisicao."""
+    urls = _candidatos_url(company_name, website)
+    if not urls:
+        return None
+
+    loop = asyncio.get_event_loop()
+    fim = loop.time() + deadline_s
+    visitados: set[str] = set()
+    timeout = httpx.Timeout(8.0, connect=5.0)
+    async with httpx.AsyncClient(
+        timeout=timeout, headers=SEARCH_HEADERS, follow_redirects=True, verify=False
+    ) as client:
+        for url in urls:
+            if loop.time() >= fim:
+                break
+            if url in visitados:
+                continue
+            visitados.add(url)
+            try:
+                html = await _fetch_html_async(client, url)
+            except Exception:
+                continue
+            if not html:
+                continue
+            texto = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
+            whats = extrair_whatsapp(html + " " + texto)
+            if whats:
+                return {"whatsapp": whats, "fonte_whatsapp": url}
+            for link in _candidate_internal_links(html, url)[:5]:
+                if loop.time() >= fim:
+                    break
+                if link in visitados:
+                    continue
+                visitados.add(link)
+                try:
+                    ihtml = await _fetch_html_async(client, link)
+                except Exception:
+                    continue
+                if not ihtml:
+                    continue
+                itexto = BeautifulSoup(ihtml, "html.parser").get_text(" ", strip=True)
+                whats = extrair_whatsapp(ihtml + " " + itexto)
+                if whats:
+                    return {"whatsapp": whats, "fonte_whatsapp": link}
+
+        # Fallback: não achou no site -> pesquisa no buscador (Bing/DuckDuckGo)
+        if loop.time() < fim:
+            achado = await _whatsapp_por_busca(client, company_name, loop, fim)
+            if achado:
+                return achado
+    return None
+
+
+# ---- Descoberta de e-mails (empresa + donos) ------------------------------
+
+EMAIL_RE = re.compile(r"[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}", re.I)
+# locais/domínios que não são e-mail de negócio (placeholders, libs, imagens)
+EMAIL_BLOQUEIO = (
+    "sentry", "wixpress", "example.", "@example", "noreply", "no-reply", "donotreply",
+    "do-not-reply", "godaddy", "core.windows", "cloudflare", "schema.org", "sentry.io",
+    "@2x", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", "u003e", "email@",
+    "seuemail", "seu-email", "nome@", "test@", "teste@",
+)
+# locais preferidos para o e-mail "oficial" da empresa
+EMAIL_LOCAL_PREF = (
+    "contato", "comercial", "atendimento", "faleconosco", "fale", "vendas",
+    "sac", "imprensa", "negocios", "incorporacao", "relacionamento", "rh",
+)
+
+
+def emails_validos(texto: str) -> list[str]:
+    """Extrai e-mails de um HTML/texto (mailto: + padrão), filtrando lixo."""
+    if not texto:
+        return []
+    achados: list[str] = []
+    for m in re.finditer(r"mailto:([^\"'>?\s]+)", texto, re.I):
+        achados.append(m.group(1))
+    for m in EMAIL_RE.finditer(texto):
+        achados.append(m.group(0))
+
+    out, vistos = [], set()
+    for e in achados:
+        e = (e or "").strip().strip(".").lower()
+        if "@" not in e:
+            continue
+        local, _, dom = e.partition("@")
+        if not local or "." not in dom:
+            continue
+        if any(b in e for b in EMAIL_BLOQUEIO):
+            continue
+        if e in vistos:
+            continue
+        vistos.add(e)
+        out.append(e)
+    return out
+
+
+def melhor_email_empresa(emails: list[str], dominio: Optional[str] = None) -> Optional[str]:
+    """Escolhe o e-mail institucional mais provável da empresa."""
+    if not emails:
+        return None
+    dom = (dominio or "").lower().lstrip("www.")
+
+    def chave(e: str):
+        local, _, d = e.partition("@")
+        s = 0
+        if any(p in local for p in EMAIL_LOCAL_PREF):
+            s += 3
+        if dom and dom in d:
+            s += 2
+        if local in ("info", "mail", "email", "site"):
+            s -= 1
+        return -s
+
+    return sorted(emails, key=chave)[0]
+
+
+def casar_email_dono(nome: str, emails: list[str]) -> Optional[str]:
+    """Tenta associar um e-mail ao nome de um sócio/dono pelo padrão do local.
+    Conservador: exige nome+sobrenome (ou inicial+sobrenome) para evitar erro."""
+    toks = _normalize_company_tokens(nome)
+    if len(toks) < 2:
+        return None
+    first, last = toks[0], toks[-1]
+    for e in emails:
+        local = re.sub(r"[^a-z0-9]", "", e.split("@")[0].lower())
+        if not local:
+            continue
+        if first + last == local or last + first == local:
+            return e
+        if f"{first}.{last}" in e.lower() or f"{last}.{first}" in e.lower():
+            return e
+        if local == first[0] + last or local == first + last[0]:
+            return e
+    return None
+
+
+async def _emails_por_busca(client, company_name: str, loop, fim) -> list[str]:
+    """Fallback: pesquisa a empresa e coleta e-mails só das páginas do domínio
+    oficial (evita e-mail de terceiros)."""
+    engines = ("https://www.bing.com/search?q=", "https://duckduckgo.com/html/?q=")
+    queries = (f"{company_name} email contato", f"{company_name} fale conosco")
+    visitados: set[str] = set()
+    coletados: list[str] = []
+    for engine in engines:
+        for query in queries:
+            if loop.time() >= fim:
+                return coletados
+            try:
+                resp = await client.get(engine + urllib.parse.quote(query))
+                serp = resp.text
+            except Exception:
+                continue
+            for href in _links_resultado_busca(serp)[:5]:
+                if loop.time() >= fim:
+                    return coletados
+                if href in visitados:
+                    continue
+                visitados.add(href)
+                if not _dominio_da_empresa(href, company_name):
+                    continue
+                try:
+                    phtml = await _fetch_html_async(client, href)
+                except Exception:
+                    continue
+                coletados += emails_validos(phtml)
+            if coletados:
+                return coletados
+    return coletados
+
+
+async def descobrir_emails(
+    company_name: str, website: Optional[str] = None, deadline_s: float = 20.0
+) -> dict:
+    """Varre o site da empresa (home + contato + links internos) coletando os
+    e-mails. Cai para busca (domínio oficial) se o site não entregar."""
+    urls = _candidatos_url(company_name, website)
+    if not urls:
+        return {"emails": []}
+
+    loop = asyncio.get_event_loop()
+    fim = loop.time() + deadline_s
+    visitados: set[str] = set()
+    coletados: list[str] = []
+    timeout = httpx.Timeout(8.0, connect=5.0)
+    async with httpx.AsyncClient(
+        timeout=timeout, headers=SEARCH_HEADERS, follow_redirects=True, verify=False
+    ) as client:
+        for url in urls:
+            if loop.time() >= fim:
+                break
+            if url in visitados:
+                continue
+            visitados.add(url)
+            try:
+                html = await _fetch_html_async(client, url)
+            except Exception:
+                continue
+            if not html:
+                continue
+            coletados += emails_validos(html)
+            for link in _candidate_internal_links(html, url)[:5]:
+                if loop.time() >= fim:
+                    break
+                if link in visitados:
+                    continue
+                visitados.add(link)
+                try:
+                    ihtml = await _fetch_html_async(client, link)
+                except Exception:
+                    continue
+                coletados += emails_validos(ihtml)
+
+        if not coletados and loop.time() < fim:
+            coletados += await _emails_por_busca(client, company_name, loop, fim)
+
+    # dedup preservando ordem
+    out, vistos = [], set()
+    for e in coletados:
+        if e not in vistos:
+            vistos.add(e); out.append(e)
+    return {"emails": out}
 
 
 async def fetch_cnpj_data(cnpj: str) -> dict:
@@ -270,6 +570,8 @@ def _candidate_internal_links(html: str, base_url: str) -> list[str]:
         "empresa",
         "quem-somos",
         "quem somos",
+        "whatsapp",
+        "atendimento",
         "ri",
     )
     seen = set()
