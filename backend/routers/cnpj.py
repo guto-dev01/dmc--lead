@@ -2,6 +2,8 @@ from fastapi import APIRouter, HTTPException
 import httpx
 import re
 
+from services.cnpj_enrichment import map_cnpja
+
 router = APIRouter()
 
 def format_cnpj(cnpj: str) -> str:
@@ -78,6 +80,14 @@ async def consultar_cnpj(cnpj: str):
                 }
         except HTTPException:
             raise
+        except Exception:
+            pass
+
+        # Fallback final: CNPJá (open.cnpja.com)
+        try:
+            r = await client.get(f"https://open.cnpja.com/office/{cnpj_limpo}")
+            if r.status_code == 200:
+                return map_cnpja(r.json(), cnpj_limpo)
         except Exception:
             pass
 

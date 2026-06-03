@@ -474,6 +474,64 @@ async def descobrir_emails(
     return {"emails": out}
 
 
+def map_cnpja(data: dict, cnpj_limpo: str) -> dict:
+    """Converte a resposta de open.cnpja.com/office/{cnpj} para o formato padrão."""
+    company = data.get("company") or {}
+    address = data.get("address") or {}
+    phones = data.get("phones") or []
+    emails = data.get("emails") or []
+
+    def _fone(p: dict) -> Optional[str]:
+        if not p:
+            return None
+        area = (p.get("area") or "").strip()
+        num = (p.get("number") or "").strip()
+        return f"({area}) {num}".strip() if (area or num) else None
+
+    tel1 = _fone(phones[0]) if len(phones) > 0 else None
+    tel2 = _fone(phones[1]) if len(phones) > 1 else None
+
+    # members (sócios) -> mesmo formato do QSA usado em decisores/empresas
+    qsa = []
+    for m in (company.get("members") or []):
+        pessoa = m.get("person") or {}
+        role = m.get("role") or {}
+        qsa.append({
+            "nome_socio": pessoa.get("name"),
+            "qualificacao_socio": role.get("text"),
+            "faixa_etaria": pessoa.get("age"),
+            "data_entrada_sociedade": m.get("since"),
+        })
+
+    return {
+        "cnpj": cnpj_limpo,
+        "razao_social": company.get("name"),
+        "nome_fantasia": data.get("alias"),
+        "situacao_cadastral": (data.get("status") or {}).get("text"),
+        "data_situacao_cadastral": data.get("statusDate"),
+        "data_abertura": data.get("founded"),
+        "natureza_juridica": (company.get("nature") or {}).get("text"),
+        "porte": (company.get("size") or {}).get("text"),
+        "capital_social": company.get("equity"),
+        "cnae_principal": (data.get("mainActivity") or {}).get("id"),
+        "cnae_descricao": (data.get("mainActivity") or {}).get("text"),
+        "logradouro": address.get("street"),
+        "numero": address.get("number"),
+        "complemento": address.get("details"),
+        "bairro": address.get("district"),
+        "municipio": address.get("city"),
+        "uf": address.get("state"),
+        "cep": address.get("zip"),
+        "email": emails[0].get("address") if emails else None,
+        "telefone": tel1,
+        "telefone2": tel2,
+        "whatsapp": whatsapp_de_telefones(tel1, tel2),
+        "qsa": qsa,
+        "fonte": "CNPJá",
+        "raw": data,
+    }
+
+
 async def fetch_cnpj_data(cnpj: str) -> dict:
     cnpj_limpo = clean_cnpj(cnpj)
     if len(cnpj_limpo) != 14:
@@ -544,6 +602,14 @@ async def fetch_cnpj_data(cnpj: str) -> dict:
                     "fonte": "ReceitaWS",
                     "raw": data,
                 }
+        except Exception:
+            pass
+
+        # Fallback final: CNPJá (open.cnpja.com)
+        try:
+            response = await client.get(f"https://open.cnpja.com/office/{cnpj_limpo}")
+            if response.status_code == 200:
+                return map_cnpja(response.json(), cnpj_limpo)
         except Exception:
             pass
 

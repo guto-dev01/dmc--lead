@@ -1,145 +1,198 @@
-import asyncpg
+"""Garante índices e dados iniciais no MongoDB.
 
-from database import settings
+Equivale ao antigo init.sql + ALTERs do Postgres: no Mongo não há schema fixo,
+então aqui só criamos índices (incluindo os UNIQUE que substituem as constraints)
+e semeamos as empresas/templates iniciais quando o banco está vazio.
+"""
+import uuid
+
+from pymongo import ASCENDING, DESCENDING
+
+from database import get_db, now, settings
+
+# Namespace fixo p/ gerar _id determinístico das linhas de seed (idempotente:
+# reexecutar o seed — mesmo em corrida entre workers — nunca duplica).
+_SEED_NS = uuid.UUID("00000000-0000-0000-0000-000000000001")
+
+
+def _seed_id(prefixo: str, chave: str) -> str:
+    return str(uuid.uuid5(_SEED_NS, f"{prefixo}:{chave}"))
+
+
+async def _drop_index_se_existir(coll, nome: str) -> None:
+    """Remove um índice pelo nome, ignorando se ele não existir. Usado para
+    substituir índices únicos antigos (globais) pelos novos por conta (tenant)."""
+    try:
+        await coll.drop_index(nome)
+    except Exception:
+        pass
+
+
+async def _ensure_indexes(db) -> None:
+    # empresas — cnpj único POR CONTA (multi-tenant): contas diferentes podem ter
+    # o mesmo CNPJ. Substitui o índice global antigo (uniq_empresas_cnpj).
+    await _drop_index_se_existir(db.empresas, "uniq_empresas_cnpj")
+    await db.empresas.create_index(
+        [("conta_id", ASCENDING), ("cnpj", ASCENDING)],
+        unique=True,
+        partialFilterExpression={"cnpj": {"$type": "string"}},
+        name="uniq_empresas_conta_cnpj",
+    )
+    await db.empresas.create_index([("conta_id", ASCENDING)])
+    await db.empresas.create_index([("tipo", ASCENDING)])
+    await db.empresas.create_index([("eixo", ASCENDING)])
+    await db.empresas.create_index([("status_prospeccao", ASCENDING)])
+    await db.empresas.create_index([("conta_id", ASCENDING), ("score", DESCENDING), ("created_at", DESCENDING)])
+
+    await db.contatos.create_index([("conta_id", ASCENDING)])
+    await db.contatos.create_index([("empresa_id", ASCENDING)])
+
+    # usuarios (donos/colaboradores) — e-mail único e índices de organização
+    await db.usuarios.create_index([("email", ASCENDING)], unique=True, name="uniq_usuarios_email")
+    await db.usuarios.create_index([("conta_id", ASCENDING)])
+    await db.usuarios.create_index([("status", ASCENDING)])
+    await db.usuarios.create_index([("funcao", ASCENDING)])
+    await db.usuarios.create_index([("equipe_id", ASCENDING)])
+
+    # equipes — agrupamento organizacional de colaboradores (por conta)
+    await db.equipes.create_index([("conta_id", ASCENDING)])
+    await db.equipes.create_index([("nome", ASCENDING)])
+    await db.equipes.create_index([("status", ASCENDING)])
+
+    await db.conversas.create_index([("conta_id", ASCENDING)])
+    await db.conversas.create_index([("empresa_id", ASCENDING)])
+    await db.conversas.create_index([("numero_whatsapp", ASCENDING)])
+
+    await db.mensagens.create_index([("conta_id", ASCENDING)])
+    await db.mensagens.create_index([("conversa_id", ASCENDING)])
+    await db.mensagens.create_index([("created_at", ASCENDING)])
+
+    await db.campanhas.create_index([("conta_id", ASCENDING), ("created_at", DESCENDING)])
+    await db.campanha_itens.create_index([("conta_id", ASCENDING)])
+    await db.campanha_itens.create_index([("campanha_id", ASCENDING)])
+    await db.campanha_itens.create_index([("empresa_id", ASCENDING)])
+
+    await db.atividades.create_index([("conta_id", ASCENDING)])
+    await db.atividades.create_index([("empresa_id", ASCENDING)])
+    await db.atividades.create_index([("created_at", DESCENDING)])
+    # produtividade — consultas por conta + autor + período e por tipo
+    await db.atividades.create_index([("conta_id", ASCENDING), ("autor", ASCENDING), ("created_at", DESCENDING)])
+    await db.atividades.create_index([("tipo", ASCENDING)])
+
+    # mercado_itens — UNIQUE (conta, area, tipo, nome, url) usado no upsert do scan.
+    # Substitui o índice global antigo (uniq_mercado_item).
+    await _drop_index_se_existir(db.mercado_itens, "uniq_mercado_item")
+    await db.mercado_itens.create_index(
+        [("conta_id", ASCENDING), ("area", ASCENDING), ("tipo", ASCENDING), ("nome", ASCENDING), ("url", ASCENDING)],
+        unique=True,
+        name="uniq_mercado_conta_item",
+    )
+    await db.mercado_itens.create_index([("conta_id", ASCENDING)])
+    await db.mercado_itens.create_index([("area", ASCENDING)])
+    await db.mercado_itens.create_index([("tipo", ASCENDING)])
+    await db.mercado_itens.create_index([("empresa_id", ASCENDING)])
+
+    await db.dmc_parceiros.create_index([("conta_id", ASCENDING)])
+    await db.dmc_parceiros.create_index([("nome", ASCENDING)])
+    await db.dmc_empreendimentos.create_index([("conta_id", ASCENDING)])
+    await db.dmc_empreendimentos.create_index([("status", ASCENDING)])
+    await db.dmc_empreendimentos.create_index([("parceiro_id", ASCENDING)])
+
+    # templates — agora por conta (cada conta tem os seus)
+    await db.templates.create_index([("conta_id", ASCENDING)])
+
+    # tarefas — atividades internas; filtros por status/prioridade/responsável
+    await db.tarefas.create_index([("conta_id", ASCENDING)])
+    await db.tarefas.create_index([("arquivada", ASCENDING)])
+    await db.tarefas.create_index([("status", ASCENDING)])
+    await db.tarefas.create_index([("prioridade", ASCENDING)])
+    await db.tarefas.create_index([("responsavel", ASCENDING)])
+    await db.tarefas.create_index([("data_vencimento", ASCENDING), ("created_at", DESCENDING)])
+
+
+EMPRESAS_SEED = [
+    ("Tegra Incorporadora", "incorporadora", "Consolação/Jardins", "Jardins", "Mencionada no mapa original. Empreendimentos em Consolação.", ["alto-padrao", "ativo", "mapa-original"]),
+    ("Cyrela Brazil Realty", "incorporadora", "Consolação/Jardins", "Bela Cintra", "On The Sky - R. Bela Cintra, 532. Maior incorporadora do Brasil.", ["alto-padrao", "listada-b3"]),
+    ("Vitacon", "incorporadora", "Bela Vista", "Bela Vista", "VN Consolação e Vitacon Bela Vista. Foco em mobilidade urbana.", ["compactos", "mobilidade"]),
+    ("Tecnisa", "incorporadora", "Jardins", "Jardins", "Kalea Jardins - R. Consolação 3288. Em construção.", ["alto-padrao"]),
+    ("One Innovation", "incorporadora", "Bela Vista", "Bela Vista", "Nex One Parque Augusta - 504 unidades, R$220mi VGV, entrega 2028.", ["multifamily", "top-imobiliario"]),
+    ("Gafisa", "incorporadora", "Jardins", "Jardins", "Alto padrão em Jardins. Parceria Tonino Lamborghini.", ["alto-padrao", "listada-b3"]),
+    ("AAM Incorporadora", "incorporadora", "Bela Vista", "Bela Vista", "Torre Bela Vista - R. Maria Paula 184. 581 unidades, 40 pavimentos.", ["grande-escala"]),
+    ("Fibra Experts", "incorporadora", "Consolação", "Consolação", "Prestes a fechar terreno na Rua Augusta para novo projeto.", ["prospeccao"]),
+    ("Yuny Incorporadora", "incorporadora", "Jardins", "Jardins", "Forte presença em Jardins. Alto padrão e projetos inovadores.", ["alto-padrao"]),
+    ("Setin Incorporadora", "incorporadora", "Jardins", "Jardins", "Médio e alto padrão desde 1979.", ["medio-alto-padrao"]),
+    ("Lopes Consultoria de Imóveis", "imobiliaria", "Consolação/Jardins", "Consolação", "Maior imobiliária do Brasil. 132 imobiliárias em Bela Vista.", ["grande-rede"]),
+    ("Zimmermann Imóveis", "imobiliaria", "Jardins", "Jardins", "25+ anos de mercado. Cobre Consolação, Jardins e Bela Vista.", ["especializada"]),
+    ("JAD Imóveis", "imobiliaria", "Bela Vista", "Bela Vista", "Especializada em Bela Vista, Consolação e Liberdade.", ["local", "especializada"]),
+    ("Consolação Imóveis Assessoria", "imobiliaria", "Consolação", "Consolação", "Especializada na região. Venda, locação e lançamentos.", ["local"]),
+    ("Imobiliária Bella Vista", "imobiliaria", "Bela Vista", "Bela Vista", "Prontos, em construção, planta e usados.", ["local"]),
+]
+
+TEMPLATES_SEED = [
+    (
+        "Apresentação Inicial", "prospecção",
+        "Olá, {{nome}}! Tudo bem? 🏢\n\nSou {{meu_nome}} e entrei em contato porque identificamos que a {{empresa}} atua na região de Consolação/Jardins/Bela Vista em São Paulo.\n\nDesenvolvemos soluções específicas para incorporadoras e imobiliárias da região. Posso compartilhar algumas informações que podem ser relevantes para vocês?\n\nAguardo seu retorno! 🙂",
+        ["nome", "meu_nome", "empresa"],
+    ),
+    (
+        "Follow-up", "follow-up",
+        "Olá, {{nome}}! 👋\n\nPassando para retomar nosso contato. Enviamos uma mensagem anteriormente sobre nossas soluções para o mercado imobiliário de Consolação/Jardins.\n\nVocê teve a oportunidade de ver? Posso tirar qualquer dúvida!",
+        ["nome"],
+    ),
+    (
+        "Proposta Comercial", "comercial",
+        "Olá, {{nome}}!\n\nConforme nossa conversa, segue uma breve apresentação das nossas soluções para a {{empresa}}:\n\n✅ Gestão de leads e prospecção automatizada\n✅ Integração WhatsApp Business\n✅ Dashboard com dados da Receita Federal\n✅ Campanhas de comunicação personalizadas\n\nPosso agendar uma demonstração de 15 minutos? Qual o melhor horário para você? 📅",
+        ["nome", "empresa"],
+    ),
+]
+
+
+async def _conta_principal_id(db):
+    """conta_id da conta principal (dono cujo e-mail é conta_principal_email).
+    None quando esse usuário ainda não existe — nesse caso não semeamos para não
+    criar dados órfãos sem dono. A migração cria esse usuário antes de migrar."""
+    email = (settings.conta_principal_email or "").strip().lower()
+    if not email:
+        return None
+    u = await db.usuarios.find_one({"email": email}, {"conta_id": 1})
+    if not u:
+        return None
+    return u.get("conta_id") or u["_id"]
+
+
+async def _seed_inicial(db) -> None:
+    """Semeia empresas e templates iniciais (na conta principal) somente se as
+    coleções estiverem vazias. Sem conta principal definida, não semeia."""
+    conta_id = await _conta_principal_id(db)
+    if not conta_id:
+        return
+
+    if await db.empresas.count_documents({}, limit=1) == 0:
+        ts = now()
+        for nome, tipo, regiao, bairro, observacoes, tags in EMPRESAS_SEED:
+            doc = {
+                "_id": _seed_id("empresa", nome), "conta_id": conta_id,
+                "nome": nome, "tipo": tipo, "regiao": regiao, "bairro": bairro,
+                "municipio": "São Paulo", "uf": "SP",
+                "observacoes": observacoes, "tags": tags,
+                "score": 0, "status_prospeccao": "nao_iniciado", "prioridade": "normal",
+                "created_at": ts, "updated_at": ts,
+            }
+            # upsert por _id determinístico: idempotente mesmo com workers em corrida
+            await db.empresas.update_one({"_id": doc["_id"]}, {"$setOnInsert": doc}, upsert=True)
+
+    if await db.templates.count_documents({}, limit=1) == 0:
+        ts = now()
+        for nome, categoria, conteudo, variaveis in TEMPLATES_SEED:
+            doc = {
+                "_id": _seed_id("template", nome), "conta_id": conta_id,
+                "nome": nome, "categoria": categoria, "conteudo": conteudo,
+                "variaveis": variaveis, "ativo": True, "created_at": ts,
+            }
+            await db.templates.update_one({"_id": doc["_id"]}, {"$setOnInsert": doc}, upsert=True)
 
 
 async def ensure_schema() -> None:
-    conn = await asyncpg.connect(
-        settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
-    )
-    try:
-        statements = [
-            "ALTER TABLE empresas ADD COLUMN IF NOT EXISTS razao_social VARCHAR(255)",
-            "ALTER TABLE empresas ADD COLUMN IF NOT EXISTS nome_fantasia VARCHAR(255)",
-            "ALTER TABLE empresas ADD COLUMN IF NOT EXISTS dados_cnpj JSONB",
-            "ALTER TABLE empresas ADD COLUMN IF NOT EXISTS cnpj_fonte VARCHAR(120)",
-            "ALTER TABLE empresas ADD COLUMN IF NOT EXISTS cnpj_enriquecido_em TIMESTAMP",
-            # --- Prospecção (planilha Complexo DMC) ---
-            # Eixo geográfico e funil de prospecção
-            "ALTER TABLE empresas ADD COLUMN IF NOT EXISTS eixo VARCHAR(80)",
-            "ALTER TABLE empresas ADD COLUMN IF NOT EXISTS cargo_alvo VARCHAR(120)",
-            "ALTER TABLE empresas ADD COLUMN IF NOT EXISTS status_prospeccao VARCHAR(40) DEFAULT 'nao_iniciado'",
-            "ALTER TABLE empresas ADD COLUMN IF NOT EXISTS prioridade VARCHAR(20) DEFAULT 'normal'",
-            "ALTER TABLE empresas ADD COLUMN IF NOT EXISTS proxima_acao VARCHAR(255)",
-            "ALTER TABLE empresas ADD COLUMN IF NOT EXISTS data_agendada TIMESTAMP",
-            # Contatos de prédio
-            "ALTER TABLE empresas ADD COLUMN IF NOT EXISTS sindico VARCHAR(255)",
-            "ALTER TABLE empresas ADD COLUMN IF NOT EXISTS tel_sindico VARCHAR(30)",
-            "ALTER TABLE empresas ADD COLUMN IF NOT EXISTS zelador VARCHAR(255)",
-            "ALTER TABLE empresas ADD COLUMN IF NOT EXISTS tel_portaria VARCHAR(30)",
-            "ALTER TABLE empresas ADD COLUMN IF NOT EXISTS administradora VARCHAR(255)",
-            "ALTER TABLE empresas ADD COLUMN IF NOT EXISTS tel_administradora VARCHAR(30)",
-            "ALTER TABLE empresas ADD COLUMN IF NOT EXISTS linkedin VARCHAR(255)",
-            # Coordenadas para o Mapa de Ativos (geocodificadas via OSM)
-            "ALTER TABLE empresas ADD COLUMN IF NOT EXISTS lat DOUBLE PRECISION",
-            "ALTER TABLE empresas ADD COLUMN IF NOT EXISTS lng DOUBLE PRECISION",
-            # Libera o tipo "administradora" no CHECK
-            "ALTER TABLE empresas DROP CONSTRAINT IF EXISTS empresas_tipo_check",
-            "ALTER TABLE empresas ADD CONSTRAINT empresas_tipo_check CHECK (tipo IN ('incorporadora','construtora','imobiliaria','corretora','administradora','outro'))",
-            "CREATE INDEX IF NOT EXISTS idx_empresas_eixo ON empresas(eixo)",
-            "CREATE INDEX IF NOT EXISTS idx_empresas_status_prospeccao ON empresas(status_prospeccao)",
-            """
-            CREATE TABLE IF NOT EXISTS mercado_itens (
-                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-                empresa_id UUID REFERENCES empresas(id) ON DELETE SET NULL,
-                area VARCHAR(120),
-                tipo VARCHAR(40) DEFAULT 'outro',
-                nome VARCHAR(255) NOT NULL,
-                subtitulo VARCHAR(255),
-                bairro VARCHAR(120),
-                municipio VARCHAR(120),
-                uf VARCHAR(2),
-                endereco VARCHAR(255),
-                valor_venda VARCHAR(50),
-                valor_locacao VARCHAR(50),
-                dormitorios INTEGER,
-                suites INTEGER,
-                vagas INTEGER,
-                area_privativa INTEGER,
-                status VARCHAR(50),
-                empreendimento VARCHAR(255),
-                url VARCHAR(600) NOT NULL,
-                fonte VARCHAR(255),
-                dados JSONB,
-                score INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT NOW(),
-                updated_at TIMESTAMP DEFAULT NOW(),
-                UNIQUE (area, tipo, nome, url)
-            )
-            """,
-            "CREATE INDEX IF NOT EXISTS idx_mercado_itens_area ON mercado_itens(area)",
-            "CREATE INDEX IF NOT EXISTS idx_mercado_itens_tipo ON mercado_itens(tipo)",
-            "CREATE INDEX IF NOT EXISTS idx_mercado_itens_empresa ON mercado_itens(empresa_id)",
-            "CREATE INDEX IF NOT EXISTS idx_mercado_itens_nome ON mercado_itens USING gin(nome gin_trgm_ops)",
-            # --- Complexo DMC: intermediação (parceiros + empreendimentos) ---
-            "CREATE EXTENSION IF NOT EXISTS pgcrypto",
-            """
-            CREATE TABLE IF NOT EXISTS dmc_parceiros (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                nome VARCHAR(160) NOT NULL,
-                sigla VARCHAR(20),
-                cor VARCHAR(9) DEFAULT '#00e7fc',
-                creci VARCHAR(40),
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-            """,
-            """
-            CREATE TABLE IF NOT EXISTS dmc_empreendimentos (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                codigo VARCHAR(20),
-                nome VARCHAR(255) NOT NULL,
-                tipologia VARCHAR(60),
-                parceiro_id UUID REFERENCES dmc_parceiros(id) ON DELETE SET NULL,
-                prospector VARCHAR(120),
-                status VARCHAR(40) DEFAULT 'Originação',
-                cidade VARCHAR(120),
-                uf VARCHAR(2),
-                bairro VARCHAR(120),
-                endereco VARCHAR(255),
-                cep VARCHAR(12),
-                area_terreno NUMERIC,
-                area_construida NUMERIC,
-                valor_venda NUMERIC,
-                valor_locacao NUMERIC,
-                iptu NUMERIC,
-                condominio NUMERIC,
-                cap_rate NUMERIC,
-                ocupacao NUMERIC,
-                inquilinos INTEGER,
-                ano_construcao INTEGER,
-                matricula VARCHAR(120),
-                cartorio VARCHAR(160),
-                inscricao_imobiliaria VARCHAR(120),
-                zoneamento TEXT,
-                url_fonte VARCHAR(600),
-                foto_url VARCHAR(600),
-                lat DOUBLE PRECISION,
-                lng DOUBLE PRECISION,
-                observacoes TEXT,
-                created_at TIMESTAMP DEFAULT NOW(),
-                updated_at TIMESTAMP DEFAULT NOW()
-            )
-            """,
-            "CREATE INDEX IF NOT EXISTS idx_dmc_emp_status ON dmc_empreendimentos(status)",
-            "CREATE INDEX IF NOT EXISTS idx_dmc_emp_parceiro ON dmc_empreendimentos(parceiro_id)",
-            # --- Decisores: contatos (donos/sócios/diretores) por empresa ---
-            """
-            CREATE TABLE IF NOT EXISTS contatos (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                empresa_id UUID REFERENCES empresas(id) ON DELETE CASCADE,
-                nome VARCHAR(255) NOT NULL,
-                cargo VARCHAR(100),
-                email VARCHAR(255),
-                telefone VARCHAR(20),
-                whatsapp VARCHAR(20),
-                linkedin VARCHAR(255),
-                notas TEXT,
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-            """,
-            "CREATE INDEX IF NOT EXISTS idx_contatos_empresa ON contatos(empresa_id)",
-        ]
-        for stmt in statements:
-            await conn.execute(stmt)
-    finally:
-        await conn.close()
+    db = get_db()
+    await _ensure_indexes(db)
+    await _seed_inicial(db)

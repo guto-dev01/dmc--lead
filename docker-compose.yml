@@ -15,6 +15,17 @@ services:
     networks:
       - imobpro_net
 
+  # MongoDB — banco de dados do ImobPro (empresas, contatos, campanhas…)
+  mongo:
+    image: mongo:7
+    restart: always
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "27017:27017"
+    networks:
+      - imobpro_net
+
   redis:
     image: redis:7-alpine
     restart: always
@@ -68,7 +79,8 @@ services:
       dockerfile: Dockerfile
     restart: always
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql://imobpro:${POSTGRES_PASSWORD:-imobpro123}@postgres:5432/imobpro}
+      MONGO_URL: ${MONGO_URL:-mongodb://mongo:27017}
+      MONGO_DB: ${MONGO_DB:-imobpro}
       EVOLUTION_API_URL: ${EVOLUTION_API_URL:-http://evolution:8080}
       EVOLUTION_API_KEY: ${EVOLUTION_API_KEY:-troque-esta-chave-evolution}
       EVOLUTION_INSTANCE: ${EVOLUTION_INSTANCE:-imobpro}
@@ -87,10 +99,13 @@ services:
       SMTP_FROM: ${SMTP_FROM:-}
       SMTP_FROM_NOME: ${SMTP_FROM_NOME:-Complexo DMC}
       SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
+      DONO_PRINCIPAL_EMAIL: ${DONO_PRINCIPAL_EMAIL:-}
+      APP_PUBLIC_URL: ${APP_PUBLIC_URL:-}
+      BACKEND_PUBLIC_URL: ${BACKEND_PUBLIC_URL:-http://backend:8000}
     ports:
       - "8001:8000"
     depends_on:
-      - postgres
+      - mongo
       - evolution
     networks:
       - imobpro_net
@@ -126,6 +141,7 @@ services:
 
 volumes:
   postgres_data:
+  mongo_data:
   redis_data:
   evolution_instances:
 

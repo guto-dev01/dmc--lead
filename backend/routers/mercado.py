@@ -1,23 +1,14 @@
-import json
-import uuid
 import re
 from typing import List, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from database import get_conn
+from database import get_db, new_id, now, serialize, like
 from services.market_intelligence import scan_market, _strip_accents
+from services.auth import conta_atual
 
 router = APIRouter()
-
-
-def _as_uuid(value):
-    if not value:
-        return None
-    if isinstance(value, uuid.UUID):
-        return value
-    return uuid.UUID(str(value))
 
 
 def _clip(value, max_len: int):
@@ -35,82 +26,58 @@ class MarketScanRequest(BaseModel):
     limit: Optional[int] = 60
 
 
-async def _save_market_item(conn, item: dict) -> dict:
-    row = await conn.fetchrow(
-        """
-        INSERT INTO mercado_itens (
-            empresa_id, area, tipo, nome, subtitulo, bairro, municipio, uf, endereco,
-            valor_venda, valor_locacao, dormitorios, suites, vagas, area_privativa,
-            status, empreendimento, url, fonte, dados, score, updated_at
-        )
-        VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9,
-            $10, $11, $12, $13, $14, $15,
-            $16, $17, $18, $19, $20::jsonb, $21, NOW()
-        )
-        ON CONFLICT (area, tipo, nome, url) DO UPDATE SET
-            empresa_id = EXCLUDED.empresa_id,
-            subtitulo = EXCLUDED.subtitulo,
-            bairro = EXCLUDED.bairro,
-            municipio = EXCLUDED.municipio,
-            uf = EXCLUDED.uf,
-            endereco = EXCLUDED.endereco,
-            valor_venda = EXCLUDED.valor_venda,
-            valor_locacao = EXCLUDED.valor_locacao,
-            dormitorios = EXCLUDED.dormitorios,
-            suites = EXCLUDED.suites,
-            vagas = EXCLUDED.vagas,
-            area_privativa = EXCLUDED.area_privativa,
-            status = EXCLUDED.status,
-            empreendimento = EXCLUDED.empreendimento,
-            fonte = EXCLUDED.fonte,
-            dados = EXCLUDED.dados,
-            score = EXCLUDED.score,
-            updated_at = NOW()
-        RETURNING *;
-        """,
-        _as_uuid(item.get("empresa_id")),
-        _clip(item.get("area"), 120),
-        _clip(item.get("tipo"), 40),
-        _clip(item.get("nome"), 255),
-        _clip(item.get("subtitulo"), 255),
-        _clip(item.get("bairro"), 120),
-        _clip(item.get("municipio"), 120),
-        _clip(item.get("uf"), 2),
-        _clip(item.get("endereco"), 255),
-        _clip(item.get("valor_venda"), 50),
-        _clip(item.get("valor_locacao"), 50),
-        item.get("dormitorios"),
-        item.get("suites"),
-        item.get("vagas"),
-        item.get("area_privativa"),
-        _clip(item.get("status"), 50),
-        _clip(item.get("empreendimento"), 255),
-        _clip(item.get("url"), 600),
-        _clip(item.get("fonte"), 255),
-        json.dumps(item.get("dados", {}), ensure_ascii=False),
-        item.get("score", 0),
+async def _save_market_item(conn, item: dict, conta_id=None) -> dict:
+    db = conn
+    chave = {
+        "conta_id": conta_id,
+        "area": _clip(item.get("area"), 120),
+        "tipo": _clip(item.get("tipo"), 40),
+        "nome": _clip(item.get("nome"), 255),
+        "url": _clip(item.get("url"), 600),
+    }
+    sets = {
+        "empresa_id": item.get("empresa_id") or None,
+        "subtitulo": _clip(item.get("subtitulo"), 255),
+        "bairro": _clip(item.get("bairro"), 120),
+        "municipio": _clip(item.get("municipio"), 120),
+        "uf": _clip(item.get("uf"), 2),
+        "endereco": _clip(item.get("endereco"), 255),
+        "valor_venda": _clip(item.get("valor_venda"), 50),
+        "valor_locacao": _clip(item.get("valor_locacao"), 50),
+        "dormitorios": item.get("dormitorios"),
+        "suites": item.get("suites"),
+        "vagas": item.get("vagas"),
+        "area_privativa": item.get("area_privativa"),
+        "status": _clip(item.get("status"), 50),
+        "empreendimento": _clip(item.get("empreendimento"), 255),
+        "fonte": _clip(item.get("fonte"), 255),
+        "dados": item.get("dados", {}),
+        "score": item.get("score", 0),
+        "updated_at": now(),
+    }
+    row = await db.mercado_itens.find_one_and_update(
+        chave,
+        {"$set": sets, "$setOnInsert": {"_id": new_id(), "created_at": now()}},
+        upsert=True,
+        return_document=True,
     )
-    return dict(row)
+    return serialize(row)
 
 
 @router.get("/areas")
-async def sugerir_areas(q: Optional[str] = None, limit: int = 8):
+async def sugerir_areas(q: Optional[str] = None, limit: int = 8, conta_id: str = Depends(conta_atual)):
     """Autocomplete de área: sugere bairros/regiões a partir dos dados já cadastrados
     (empresas + itens de mercado). Não depende de API externa."""
-    conn = await get_conn()
-    try:
-        rows = await conn.fetch(
-            """
-            SELECT regiao AS v FROM empresas WHERE regiao IS NOT NULL
-            UNION ALL SELECT bairro FROM empresas WHERE bairro IS NOT NULL
-            UNION ALL SELECT municipio FROM empresas WHERE municipio IS NOT NULL
-            UNION ALL SELECT bairro FROM mercado_itens WHERE bairro IS NOT NULL
-            UNION ALL SELECT area FROM mercado_itens WHERE area IS NOT NULL
-            """
-        )
-    finally:
-        await conn.close()
+    db = get_db()
+    brutos: list[str] = []
+    async for e in db.empresas.find({"conta_id": conta_id}, {"regiao": 1, "bairro": 1, "municipio": 1}):
+        for campo in ("regiao", "bairro", "municipio"):
+            if e.get(campo):
+                brutos.append(e[campo])
+    async for m in db.mercado_itens.find({"conta_id": conta_id}, {"bairro": 1, "area": 1}):
+        for campo in ("bairro", "area"):
+            if m.get(campo):
+                brutos.append(m[campo])
 
     # Aceita só o que parece nome de lugar (evita lixo que o scraper gravou em bairro/area)
     LUGAR_RE = re.compile(r"^[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'’\- ]+$")
@@ -128,8 +95,8 @@ async def sugerir_areas(q: Optional[str] = None, limit: int = 8):
 
     # Quebra valores compostos ("Consolação/Jardins/Bela Vista") em itens individuais
     contagem = {}      # chave sem acento -> [rótulo exibido, frequência]
-    for r in rows:
-        bruto = (r["v"] or "").strip()
+    for bruto in brutos:
+        bruto = (bruto or "").strip()
         for parte in re.split(r"[\/,;]+", bruto):
             parte = parte.strip(" .-")
             if not parece_lugar(parte):
@@ -164,153 +131,126 @@ async def listar_itens(
     empresa_id: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
+    conta_id: str = Depends(conta_atual),
 ):
-    conn = await get_conn()
-    try:
-        where = []
-        params = []
-        i = 1
+    db = get_db()
+    filtro: dict = {"conta_id": conta_id}
+    if area:
+        filtro["area"] = like(area)
+    if tipo:
+        filtro["tipo"] = tipo
+    if empresa_id:
+        filtro["empresa_id"] = empresa_id
 
-        if area:
-            where.append(f"area ILIKE ${i}")
-            params.append(f"%{area}%")
-            i += 1
-        if tipo:
-            where.append(f"tipo = ${i}")
-            params.append(tipo)
-            i += 1
-        if empresa_id:
-            where.append(f"empresa_id = ${i}")
-            params.append(uuid.UUID(empresa_id))
-            i += 1
+    total = await db.mercado_itens.count_documents(filtro)
+    rows = await (
+        db.mercado_itens.find(filtro)
+        .sort([("score", -1), ("created_at", -1)])
+        .skip(offset)
+        .limit(limit)
+        .to_list(length=limit)
+    )
+    items = [serialize(r) for r in rows]
+    await _anexar_empresa_nome(db, items, conta_id)
+    return {"total": total, "items": items, "limit": limit, "offset": offset}
 
-        where_sql = "WHERE " + " AND ".join(where) if where else ""
-        params += [limit, offset]
-        rows = await conn.fetch(
-            f"""
-            SELECT mi.*, e.nome as empresa_nome
-            FROM mercado_itens mi
-            LEFT JOIN empresas e ON e.id = mi.empresa_id
-            {where_sql}
-            ORDER BY mi.score DESC, mi.created_at DESC
-            LIMIT ${i} OFFSET ${i + 1}
-            """,
-            *params,
-        )
-        total = await conn.fetchval(
-            f"SELECT COUNT(*) FROM mercado_itens mi {where_sql}",
-            *params[:-2],
-        )
-        return {
-            "total": total,
-            "items": [dict(r) for r in rows],
-            "limit": limit,
-            "offset": offset,
-        }
-    finally:
-        await conn.close()
+
+async def _anexar_empresa_nome(db, items: list[dict], conta_id=None) -> None:
+    """Anexa empresa_nome a cada item (substitui o LEFT JOIN com empresas)."""
+    emp_ids = list({i["empresa_id"] for i in items if i.get("empresa_id")})
+    if not emp_ids:
+        for i in items:
+            i["empresa_nome"] = None
+        return
+    filtro = {"_id": {"$in": emp_ids}}
+    if conta_id is not None:
+        filtro["conta_id"] = conta_id
+    empresas = await db.empresas.find(filtro, {"nome": 1}).to_list(length=None)
+    nome_map = {e["_id"]: e.get("nome") for e in empresas}
+    for i in items:
+        i["empresa_nome"] = nome_map.get(i.get("empresa_id"))
 
 
 @router.get("/summary")
-async def resumo_mercado(area: Optional[str] = None):
-    conn = await get_conn()
-    try:
-        where_sql = "WHERE area ILIKE $1" if area else ""
-        params = [f"%{area}%"] if area else []
-        total = await conn.fetchval(f"SELECT COUNT(*) FROM mercado_itens {where_sql}", *params)
-        por_tipo = await conn.fetch(
-            f"""
-            SELECT tipo, COUNT(*) as total
-            FROM mercado_itens
-            {where_sql}
-            GROUP BY tipo
-            ORDER BY total DESC
-            """,
-            *params,
-        )
-        por_empresa = await conn.fetch(
-            f"""
-            SELECT COALESCE(e.nome, 'Sem empresa') as nome, COUNT(*) as total
-            FROM mercado_itens mi
-            LEFT JOIN empresas e ON e.id = mi.empresa_id
-            {where_sql}
-            GROUP BY COALESCE(e.nome, 'Sem empresa')
-            ORDER BY total DESC, nome
-            LIMIT 8
-            """,
-            *params,
-        )
-        recentes = await conn.fetch(
-            f"""
-            SELECT mi.*, e.nome as empresa_nome
-            FROM mercado_itens mi
-            LEFT JOIN empresas e ON e.id = mi.empresa_id
-            {where_sql}
-            ORDER BY mi.created_at DESC
-            LIMIT 8
-            """,
-            *params,
-        )
-        return {
-            "total": total,
-            "por_tipo": [dict(r) for r in por_tipo],
-            "por_empresa": [dict(r) for r in por_empresa],
-            "recentes": [dict(r) for r in recentes],
-        }
-    finally:
-        await conn.close()
+async def resumo_mercado(area: Optional[str] = None, conta_id: str = Depends(conta_atual)):
+    db = get_db()
+    filtro = {"conta_id": conta_id, "area": like(area)} if area else {"conta_id": conta_id}
+    total = await db.mercado_itens.count_documents(filtro)
+
+    por_tipo_raw = await (await db.mercado_itens.aggregate([
+        {"$match": filtro},
+        {"$group": {"_id": "$tipo", "total": {"$sum": 1}}},
+        {"$sort": {"total": -1}},
+    ])).to_list(length=None)
+    por_tipo = [{"tipo": r["_id"], "total": r["total"]} for r in por_tipo_raw]
+
+    # por empresa: agrupa por empresa_id, depois resolve o nome
+    por_emp_raw = await (await db.mercado_itens.aggregate([
+        {"$match": filtro},
+        {"$group": {"_id": "$empresa_id", "total": {"$sum": 1}}},
+    ])).to_list(length=None)
+    emp_ids = [r["_id"] for r in por_emp_raw if r["_id"]]
+    nome_map = {}
+    if emp_ids:
+        empresas = await db.empresas.find({"_id": {"$in": emp_ids}, "conta_id": conta_id}, {"nome": 1}).to_list(length=None)
+        nome_map = {e["_id"]: e.get("nome") for e in empresas}
+    por_empresa = [
+        {"nome": nome_map.get(r["_id"]) or "Sem empresa", "total": r["total"]}
+        for r in por_emp_raw
+    ]
+    por_empresa.sort(key=lambda x: (-x["total"], x["nome"]))
+    por_empresa = por_empresa[:8]
+
+    recentes_raw = await db.mercado_itens.find(filtro).sort("created_at", -1).limit(8).to_list(length=8)
+    recentes = [serialize(r) for r in recentes_raw]
+    await _anexar_empresa_nome(db, recentes, conta_id)
+
+    return {
+        "total": total,
+        "por_tipo": por_tipo,
+        "por_empresa": por_empresa,
+        "recentes": recentes,
+    }
 
 
 @router.post("/scan")
-async def escanear_mercado(body: MarketScanRequest):
-    conn = await get_conn()
-    try:
-        if body.empresa_ids:
-            companies = await conn.fetch(
-                "SELECT * FROM empresas WHERE id = ANY($1::uuid[]) ORDER BY score DESC, created_at DESC",
-                [uuid.UUID(x) for x in body.empresa_ids],
-            )
-        else:
-            terms = [term.strip() for term in re.split(r"[\/,]+", body.area) if term.strip()]
-            if not terms:
-                terms = [body.area]
-            where_parts = []
-            params = []
-            for idx, term in enumerate(terms, start=1):
-                where_parts.append(f"(regiao ILIKE ${idx} OR bairro ILIKE ${idx} OR municipio ILIKE ${idx})")
-                params.append(f"%{term}%")
-            where_sql = " OR ".join(where_parts)
-            query = f"""
-                SELECT *
-                FROM empresas
-                WHERE {where_sql}
-                ORDER BY score DESC, created_at DESC
-            """
-            companies = await conn.fetch(
-                query,
-                *params,
-            )
+async def escanear_mercado(body: MarketScanRequest, conta_id: str = Depends(conta_atual)):
+    db = get_db()
+    if body.empresa_ids:
+        companies = await db.empresas.find(
+            {"_id": {"$in": body.empresa_ids}, "conta_id": conta_id}
+        ).sort([("score", -1), ("created_at", -1)]).to_list(length=None)
+    else:
+        terms = [term.strip() for term in re.split(r"[\/,]+", body.area) if term.strip()]
+        if not terms:
+            terms = [body.area]
+        ors = []
+        for term in terms:
+            ors.append({"regiao": like(term)})
+            ors.append({"bairro": like(term)})
+            ors.append({"municipio": like(term)})
+        companies = await db.empresas.find({"conta_id": conta_id, "$or": ors}).sort(
+            [("score", -1), ("created_at", -1)]
+        ).to_list(length=None)
 
-        result = await scan_market(
-            [dict(r) for r in companies],
-            body.area,
-            include_company_projects=body.include_company_projects,
-            include_area_listings=body.include_area_listings,
-            limit=body.limit or 60,
-        )
+    result = await scan_market(
+        [serialize(r) for r in companies],
+        body.area,
+        include_company_projects=body.include_company_projects,
+        include_area_listings=body.include_area_listings,
+        limit=body.limit or 60,
+    )
 
-        saved = []
-        for item in result["items"]:
-            saved.append(await _save_market_item(conn, item))
+    saved = []
+    for item in result["items"]:
+        saved.append(await _save_market_item(db, item, conta_id))
 
-        return {
-            "ok": True,
-            "area": body.area,
-            "saved": len(saved),
-            "total": result["total"],
-            "summary": result["summary"],
-            "sources": result["sources"],
-            "items": saved,
-        }
-    finally:
-        await conn.close()
+    return {
+        "ok": True,
+        "area": body.area,
+        "saved": len(saved),
+        "total": result["total"],
+        "summary": result["summary"],
+        "sources": result["sources"],
+        "items": saved,
+    }

@@ -1,8 +1,14 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-import httpx, uuid, re
-from database import settings, get_conn
+import httpx, re
+from database import settings, get_db, new_id, now, serialize
+from services.auth import require_auth, conta_atual
+
+
+def _autor(user) -> Optional[str]:
+    return (user or {}).get("sub") if isinstance(user, dict) else None
+
 
 router = APIRouter()
 webhook_router = APIRouter()
@@ -48,7 +54,7 @@ def normalizar_numero(numero: str) -> str:
     n = "".join(ch for ch in base if ch.isdigit())  # mantem somente digitos
     if n and not n.startswith("55") and len(n) <= 11:
         n = "55" + n
-    return n[:20]  # nunca estoura o VARCHAR(20)
+    return n[:20]
 
 
 def jid_de_usuario(remote_jid: str) -> bool:
@@ -283,13 +289,13 @@ async def remover_instancia(nome: str):
 
 
 @router.post("/enviar")
-async def enviar_mensagem(body: EnviarMensagem):
+async def enviar_mensagem(body: EnviarMensagem, user=Depends(require_auth), conta_id: str = Depends(conta_atual)):
     """Envia mensagem de texto via WhatsApp"""
     numero = normalizar_numero(body.numero)
 
     # Valida o numero antes de chamar a Evolution (evita erro tecnico cru)
-    so_digitos = "".join(ch for ch in numero if ch.isdigit())
-    if len(so_digitos) < 12 or len(so_digitos) > 13:
+    digitos = "".join(ch for ch in numero if ch.isdigit())
+    if len(digitos) < 12 or len(digitos) > 13:
         raise HTTPException(
             status_code=400,
             detail="Número de WhatsApp inválido ou não informado. Use o formato com DDD, ex: (11) 99999-9999.",
@@ -306,9 +312,7 @@ async def enviar_mensagem(body: EnviarMensagem):
     }
 
     try:
-        result = await evo_post(
-            f"message/sendText/{inst(body.instance)}", payload
-        )
+        result = await evo_post(f"message/sendText/{inst(body.instance)}", payload)
     except HTTPException as e:
         # Traduz o erro "numero nao existe no WhatsApp" da Evolution
         detalhe = str(e.detail)
@@ -319,230 +323,115 @@ async def enviar_mensagem(body: EnviarMensagem):
             )
         raise
 
-    conn = await get_conn()
-    try:
-        conversa = None
-        # 1) por conversa_id explicito
-        if body.conversa_id:
-            conversa = await conn.fetchrow(
-                "SELECT id, empresa_id FROM conversas WHERE id = $1", uuid.UUID(body.conversa_id)
-            )
-        # 2) por empresa + numero
-        if not conversa and body.empresa_id:
-            conversa = await conn.fetchrow(
-                "SELECT id, empresa_id FROM conversas WHERE empresa_id = $1 AND numero_whatsapp = $2",
-                uuid.UUID(body.empresa_id), numero,
-            )
-        # 3) por numero (qualquer conversa)
-        if not conversa:
-            conversa = await conn.fetchrow(
-                "SELECT id, empresa_id FROM conversas WHERE numero_whatsapp = $1 ORDER BY ultimo_contato DESC NULLS LAST LIMIT 1",
-                numero,
-            )
-        # 4) cria nova
-        if not conversa:
-            empresa_uuid = uuid.UUID(body.empresa_id) if body.empresa_id else None
-            conversa = await conn.fetchrow(
-                """INSERT INTO conversas (empresa_id, contato_id, numero_whatsapp, status, ultimo_contato)
-                   VALUES ($1, $2, $3, 'ativo', NOW()) RETURNING id, empresa_id""",
-                empresa_uuid,
-                uuid.UUID(body.contato_id) if body.contato_id else None,
-                numero,
-            )
-        else:
-            await conn.execute(
-                "UPDATE conversas SET ultimo_contato = NOW(), status = 'ativo' WHERE id = $1", conversa["id"]
-            )
-
-        # Salva mensagem
-        await conn.execute(
-            """INSERT INTO mensagens (conversa_id, direction, tipo, conteudo, status, whatsapp_id)
-               VALUES ($1, 'outbound', 'text', $2, 'sent', $3)""",
-            conversa["id"], body.mensagem, result.get("key", {}).get("id"),
-        )
-
-        # Log atividade (somente se vinculada a uma empresa)
-        empresa_id_log = conversa["empresa_id"]
-        if empresa_id_log:
-            await conn.execute(
-                """INSERT INTO atividades (empresa_id, tipo, descricao)
-                   VALUES ($1, 'whatsapp_sent', $2)""",
-                empresa_id_log, f"Mensagem enviada para {numero}",
-            )
-        return {"ok": True, "conversa_id": str(conversa["id"]), "result": result}
-    finally:
-        await conn.close()
+    # Gravação de conversa/mensagem desativada por opção do usuário: o WhatsApp
+    # é enviado normalmente, mas o conteúdo NÃO fica salvo no banco do ImobPro.
+    # Mantemos apenas o log de atividade (produtividade), que registra o número
+    # de destino — sem guardar o texto da mensagem.
+    db = get_db()
+    await db.atividades.insert_one({
+        "_id": new_id(), "conta_id": conta_id, "empresa_id": body.empresa_id or None, "tipo": "whatsapp_sent",
+        "autor": _autor(user), "descricao": f"Mensagem enviada para {numero}", "created_at": now(),
+    })
+    return {"ok": True, "conversa_id": None, "result": result}
 
 
 @router.post("/enviar-template")
-async def enviar_template(body: EnviarTemplate):
+async def enviar_template(body: EnviarTemplate, user=Depends(require_auth), conta_id: str = Depends(conta_atual)):
     """Envia mensagem usando template com variáveis"""
-    conn = await get_conn()
-    try:
-        tmpl = await conn.fetchrow("SELECT * FROM templates WHERE id = $1", uuid.UUID(body.template_id))
-        if not tmpl:
-            raise HTTPException(status_code=404, detail="Template não encontrado")
+    db = get_db()
+    tmpl = await db.templates.find_one({"_id": body.template_id, "conta_id": conta_id})
+    if not tmpl:
+        raise HTTPException(status_code=404, detail="Template não encontrado")
 
-        texto = tmpl["conteudo"]
-        for k, v in (body.variaveis or {}).items():
-            texto = texto.replace(f"{{{{{k}}}}}", str(v))
-
-        empresa = await conn.fetchrow("SELECT whatsapp, telefone FROM empresas WHERE id = $1", uuid.UUID(body.empresa_id))
-    finally:
-        await conn.close()
+    texto = tmpl["conteudo"]
+    for k, v in (body.variaveis or {}).items():
+        texto = texto.replace(f"{{{{{k}}}}}", str(v))
 
     # Reutiliza endpoint de envio
-    from fastapi.testclient import TestClient
     return await enviar_mensagem(EnviarMensagem(
         empresa_id=body.empresa_id,
         numero=body.numero,
         mensagem=texto,
         contato_id=body.contato_id,
-    ))
+    ), user=user, conta_id=conta_id)
+
+
+async def _resumo_conversa(db, cv: dict) -> dict:
+    """Monta o resumo de uma conversa (última mensagem, contagens, nomes)."""
+    cid = cv["_id"]
+    total = await db.mensagens.count_documents({"conversa_id": cid})
+    ultima = await db.mensagens.find({"conversa_id": cid}).sort("created_at", -1).limit(1).to_list(length=1)
+    ultima = ultima[0] if ultima else None
+    nao_lidas = await db.mensagens.count_documents(
+        {"conversa_id": cid, "direction": "inbound", "status": "received"}
+    )
+    empresa = await db.empresas.find_one({"_id": cv.get("empresa_id")}, {"nome": 1}) if cv.get("empresa_id") else None
+    contato = await db.contatos.find_one({"_id": cv.get("contato_id")}, {"nome": 1}) if cv.get("contato_id") else None
+    empresa_nome = empresa.get("nome") if empresa else None
+    contato_nome = contato.get("nome") if contato else None
+    return {
+        "id": cid,
+        "numero_whatsapp": cv.get("numero_whatsapp"),
+        "empresa_id": cv.get("empresa_id"),
+        "contato_id": cv.get("contato_id"),
+        "status": cv.get("status"),
+        "ultimo_contato": cv.get("ultimo_contato"),
+        "empresa_nome": empresa_nome,
+        "contato_nome": contato_nome,
+        "nome_exibicao": contato_nome or empresa_nome or cv.get("numero_whatsapp"),
+        "total_mensagens": total,
+        "ultima_mensagem": ultima.get("conteudo") if ultima else None,
+        "ultima_direcao": ultima.get("direction") if ultima else None,
+        "nao_lidas": nao_lidas,
+    }
 
 
 @router.get("/inbox")
-async def inbox():
+async def inbox(conta_id: str = Depends(conta_atual)):
     """Lista TODAS as conversas (espelho do WhatsApp) com ultima mensagem e nao lidas."""
-    conn = await get_conn()
-    try:
-        rows = await conn.fetch(
-            """SELECT cv.id, cv.numero_whatsapp, cv.empresa_id, cv.contato_id,
-                      cv.status, cv.ultimo_contato,
-                      e.nome AS empresa_nome,
-                      ct.nome AS contato_nome,
-                      COALESCE(ct.nome, e.nome, cv.numero_whatsapp) AS nome_exibicao,
-                      (SELECT COUNT(*) FROM mensagens m WHERE m.conversa_id = cv.id) AS total_mensagens,
-                      (SELECT conteudo FROM mensagens m WHERE m.conversa_id = cv.id ORDER BY created_at DESC LIMIT 1) AS ultima_mensagem,
-                      (SELECT direction FROM mensagens m WHERE m.conversa_id = cv.id ORDER BY created_at DESC LIMIT 1) AS ultima_direcao,
-                      (SELECT COUNT(*) FROM mensagens m WHERE m.conversa_id = cv.id AND m.direction = 'inbound' AND m.status = 'received') AS nao_lidas
-               FROM conversas cv
-               LEFT JOIN empresas e ON e.id = cv.empresa_id
-               LEFT JOIN contatos ct ON ct.id = cv.contato_id
-               ORDER BY cv.ultimo_contato DESC NULLS LAST"""
-        )
-        return [dict(r) for r in rows]
-    finally:
-        await conn.close()
+    db = get_db()
+    conversas = await db.conversas.find({"conta_id": conta_id}).sort("ultimo_contato", -1).to_list(length=None)
+    return [await _resumo_conversa(db, cv) for cv in conversas]
 
 
 @router.post("/conversas/{conversa_id}/ler")
-async def marcar_lida(conversa_id: str):
+async def marcar_lida(conversa_id: str, conta_id: str = Depends(conta_atual)):
     """Marca as mensagens recebidas de uma conversa como lidas."""
-    conn = await get_conn()
-    try:
-        await conn.execute(
-            "UPDATE mensagens SET status = 'read' WHERE conversa_id = $1 AND direction = 'inbound' AND status = 'received'",
-            uuid.UUID(conversa_id),
-        )
-        return {"ok": True}
-    finally:
-        await conn.close()
+    db = get_db()
+    await db.mensagens.update_many(
+        {"conversa_id": conversa_id, "conta_id": conta_id, "direction": "inbound", "status": "received"},
+        {"$set": {"status": "read"}},
+    )
+    return {"ok": True}
 
 
 @router.get("/conversas/{empresa_id}")
-async def listar_conversas(empresa_id: str):
-    conn = await get_conn()
-    try:
-        rows = await conn.fetch(
-            """SELECT cv.*, 
-               (SELECT COUNT(*) FROM mensagens m WHERE m.conversa_id = cv.id) as total_mensagens,
-               (SELECT conteudo FROM mensagens m WHERE m.conversa_id = cv.id ORDER BY created_at DESC LIMIT 1) as ultima_mensagem
-               FROM conversas cv WHERE cv.empresa_id = $1
-               ORDER BY cv.ultimo_contato DESC NULLS LAST""",
-            uuid.UUID(empresa_id),
-        )
-        return [dict(r) for r in rows]
-    finally:
-        await conn.close()
+async def listar_conversas(empresa_id: str, conta_id: str = Depends(conta_atual)):
+    db = get_db()
+    conversas = await db.conversas.find({"empresa_id": empresa_id, "conta_id": conta_id}).sort("ultimo_contato", -1).to_list(length=None)
+    out = []
+    for cv in conversas:
+        d = serialize(cv)
+        d["total_mensagens"] = await db.mensagens.count_documents({"conversa_id": d["id"]})
+        ultima = await db.mensagens.find({"conversa_id": d["id"]}).sort("created_at", -1).limit(1).to_list(length=1)
+        d["ultima_mensagem"] = ultima[0]["conteudo"] if ultima else None
+        out.append(d)
+    return out
 
 
 @router.get("/mensagens/{conversa_id}")
-async def listar_mensagens(conversa_id: str):
-    conn = await get_conn()
-    try:
-        rows = await conn.fetch(
-            "SELECT * FROM mensagens WHERE conversa_id = $1 ORDER BY created_at ASC",
-            uuid.UUID(conversa_id),
-        )
-        return [dict(r) for r in rows]
-    finally:
-        await conn.close()
+async def listar_mensagens(conversa_id: str, conta_id: str = Depends(conta_atual)):
+    db = get_db()
+    rows = await db.mensagens.find({"conversa_id": conversa_id, "conta_id": conta_id}).sort("created_at", 1).to_list(length=None)
+    return [serialize(r) for r in rows]
 
 
 @webhook_router.post("/webhook")
 async def webhook_evolution(payload: dict):
-    """Recebe webhooks da Evolution API (mensagens recebidas)"""
-    event = (payload.get("event") or "").replace("_", ".").lower()
-    data = payload.get("data", {}) or {}
+    """Recebe webhooks da Evolution API.
 
-    if event == "messages.upsert":
-        # v2 manda o objeto da mensagem direto em "data"; v1 mandava em data.messages[]
-        msg = data
-        if isinstance(data, dict) and isinstance(data.get("messages"), list):
-            msg = data.get("messages", [{}])[0]
-
-        key = msg.get("key", {}) or {}
-        if key.get("fromMe"):
-            return {"ok": True}
-
-        remote_jid = key.get("remoteJid", "")
-        # ignora grupos, status e newsletters (so conversa individual)
-        if not jid_de_usuario(remote_jid):
-            return {"ok": True}
-
-        # identidade do remetente: telefone real (quando a Evolution fornece) e/ou LID
-        numero_phone, lid = identidade_remetente(key, msg)
-        if not numero_phone and not lid:
-            return {"ok": True}
-
-        message = msg.get("message", {}) or {}
-        conteudo = message.get("conversation") or \
-                   message.get("extendedTextMessage", {}).get("text") or \
-                   message.get("imageMessage", {}).get("caption") or \
-                   message.get("videoMessage", {}).get("caption") or ""
-
-        if not conteudo:
-            return {"ok": True}
-
-        conn = await get_conn()
-        try:
-            conversa = None
-            # 1) casa pelo telefone real (mesmo com variacao do 9o digito) -> junta na thread existente
-            if numero_phone:
-                conversa = await conn.fetchrow(
-                    "SELECT id, empresa_id FROM conversas WHERE numero_whatsapp = ANY($1::varchar[]) ORDER BY ultimo_contato DESC NULLS LAST LIMIT 1",
-                    variantes_numero(numero_phone),
-                )
-            # 2) casa pelo LID (contatos do WhatsApp novo, sem telefone exposto)
-            if not conversa and lid:
-                conversa = await conn.fetchrow(
-                    "SELECT id, empresa_id FROM conversas WHERE numero_whatsapp = $1 ORDER BY ultimo_contato DESC NULLS LAST LIMIT 1",
-                    lid,
-                )
-            if not conversa:
-                # mensagem de quem ainda nao tem conversa: cria sem empresa vinculada
-                # prefere o telefone real; se nao houver, usa o LID como identificador
-                conversa = await conn.fetchrow(
-                    """INSERT INTO conversas (numero_whatsapp, status, ultimo_contato)
-                       VALUES ($1, 'ativo', NOW()) RETURNING id, empresa_id""",
-                    numero_phone or lid,
-                )
-            elif numero_phone:
-                # conversa achada pelo LID, mas agora temos o telefone real -> promove o identificador
-                await conn.execute(
-                    "UPDATE conversas SET numero_whatsapp = $1 WHERE id = $2 AND numero_whatsapp = $3",
-                    numero_phone, conversa["id"], lid,
-                )
-            await conn.execute(
-                """INSERT INTO mensagens (conversa_id, direction, tipo, conteudo, status, whatsapp_id)
-                   VALUES ($1, 'inbound', 'text', $2, 'received', $3)""",
-                conversa["id"], conteudo, msg.get("key", {}).get("id"),
-            )
-            await conn.execute(
-                "UPDATE conversas SET ultimo_contato = NOW() WHERE id = $1", conversa["id"]
-            )
-        finally:
-            await conn.close()
-
+    Gravação desativada por opção do usuário: as conversas e mensagens do
+    WhatsApp NÃO são mais armazenadas no banco do ImobPro. Apenas confirmamos
+    o recebimento para a Evolution não reenfileirar o evento.
+    """
     return {"ok": True}

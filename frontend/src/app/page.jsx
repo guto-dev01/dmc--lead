@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import DMCPlatform, { DMC_NAV } from "./dmc/DMCPlatform";
+import EquipesPanel from "./equipes/EquipesPanel";
+import AgendaCalendar from "./agenda/AgendaCalendar";
 
 const API =
   process.env.NEXT_PUBLIC_API_URL ||
@@ -42,6 +44,8 @@ const isValidPage = (value) => {
     "mercado",
     "campanhas",
     "templates",
+    "tarefas",
+    "equipes",
     "conversas",
     "whatsapp",
   ]);
@@ -101,6 +105,13 @@ const Icon = ({ name, size = 18 }) => {
     pulse: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>,
     layers: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><polygon points="12 2 3 7 12 12 21 7 12 2"/><polyline points="3 12 12 17 21 12"/><polyline points="3 17 12 22 21 17"/></svg>,
     spark: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12 2l1.9 5.8H20l-4.8 3.5 1.8 5.7L12 13.9 6.9 17l1.8-5.7L4 7.8h6.1z"/></svg>,
+    tasks: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M9 5h10M9 12h10M9 19h10"/><path d="m3 5 1.5 1.5L7 4"/><path d="m3 12 1.5 1.5L7 11"/><path d="m3 19 1.5 1.5L7 18"/></svg>,
+    clock: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>,
+    eye: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>,
+    alert: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M10.3 3.6 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.6a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>,
+    chevronLeft: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><polyline points="15 18 9 12 15 6"/></svg>,
+    chevronRight: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><polyline points="9 18 15 12 9 6"/></svg>,
+    calendar: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>,
   };
   return icons[name] || null;
 };
@@ -120,6 +131,93 @@ const Badge = ({ children, color = "slate" }) => {
     <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium border ${colors[color] || colors.slate}`}>
       {children}
     </span>
+  );
+};
+
+// Formata números grandes no padrão brasileiro (1.234)
+const fmtNum = (n) => Number(n || 0).toLocaleString("pt-BR");
+
+// ---- TAREFAS: rótulos e cores (alinhados ao backend) ----
+const TAREFA_PRIORIDADES = [
+  { value: "baixa", label: "Baixa", color: "slate" },
+  { value: "media", label: "Média", color: "sky" },
+  { value: "alta", label: "Alta", color: "amber" },
+  { value: "urgente", label: "Urgente", color: "rose" },
+];
+const TAREFA_STATUS = [
+  { value: "pendente", label: "Pendente", color: "amber" },
+  { value: "em_andamento", label: "Em andamento", color: "sky" },
+  { value: "concluida", label: "Concluída", color: "emerald" },
+  { value: "cancelada", label: "Cancelada", color: "slate" },
+];
+const tarefaPrioridadeInfo = (v) => TAREFA_PRIORIDADES.find((p) => p.value === v) || TAREFA_PRIORIDADES[1];
+const tarefaStatusInfo = (v) => TAREFA_STATUS.find((s) => s.value === v) || TAREFA_STATUS[0];
+// Cor (hex) da tarefa no calendário: concluída/cancelada esmaecem; senão pela prioridade.
+const tarefaCor = (t) => {
+  if (t.status === "concluida") return "#34d399";
+  if (t.status === "cancelada") return "#64748b";
+  return { baixa: "#94a3b8", media: "#38bdf8", alta: "#f59e0b", urgente: "#fb7185" }[t.prioridade] || "#38bdf8";
+};
+
+// Data ISO (YYYY-MM-DD) -> dd/mm/aaaa, sem fuso (evita "voltar um dia")
+const fmtData = (iso) => {
+  if (!iso) return "—";
+  const [a, m, d] = String(iso).split("-");
+  return d && m && a ? `${d}/${m}/${a}` : iso;
+};
+
+// ---- SITUAÇÃO DE CAMPANHAS (WhatsApp / e-mail) ----
+// Exibe apenas dados reais vindos do dashboard; quando não há campanhas do canal,
+// mostra um estado vazio amigável sem inventar métricas.
+const CampanhaSituacao = ({ titulo, icon, data, unidade, vazioMsg }) => {
+  const d = data || {};
+  const criadas = Number(d.criadas || 0);
+  const taxa = d.taxa_sucesso;
+  const statusCards = [
+    { label: "Criadas", value: d.criadas, color: "#12e7ff" },
+    { label: "Em andamento", value: d.em_andamento, color: "#38bdf8" },
+    { label: "Finalizadas", value: d.finalizadas, color: "#00ff6a" },
+    { label: "Pausadas", value: d.pausadas, color: "#f59e0b" },
+    { label: "Com erro", value: d.erro, color: "#fb7185" },
+  ];
+  const msgCards = [
+    { label: `${unidade} enviados`, value: d.enviadas, color: "#00ff6a" },
+    { label: `${unidade} pendentes`, value: d.pendentes, color: "#f59e0b" },
+    { label: `${unidade} com falha`, value: d.falha, color: "#fb7185" },
+  ];
+  return (
+    <div className="surface-strong rounded-2xl p-5">
+      <div className="flex items-center justify-between gap-3 mb-4">
+        <h3 className="text-white font-semibold flex items-center gap-2">
+          <Icon name={icon} size={16} /> {titulo}
+        </h3>
+        {taxa != null && <Badge color="emerald">{taxa}% de sucesso</Badge>}
+      </div>
+      {criadas > 0 ? (
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+            {statusCards.map(c => (
+              <div key={c.label} className="rounded-2xl border border-white/6 bg-white/[0.03] p-3">
+                <div className="text-2xl font-semibold leading-none" style={{ color: c.color }}>{fmtNum(c.value)}</div>
+                <div className="text-slate-400 text-xs mt-2">{c.label}</div>
+              </div>
+            ))}
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {msgCards.map(c => (
+              <div key={c.label} className="rounded-2xl border border-white/6 bg-black/15 p-4">
+                <div className="text-slate-500 text-xs uppercase tracking-[0.16em]">{c.label}</div>
+                <div className="text-xl font-semibold text-white mt-1" style={{ color: c.color }}>{fmtNum(c.value)}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="rounded-2xl border border-white/6 bg-white/[0.03] p-5 text-slate-400 text-sm">
+          {vazioMsg}
+        </div>
+      )}
+    </div>
   );
 };
 
@@ -174,10 +272,10 @@ const LOGIN_TRUST = [
   { icon: "pulse", title: "Disponibilidade 99,9%", desc: "Infraestrutura de alta disponibilidade" },
 ];
 
-const LoginScreen = ({ username, password, setUsername, setPassword, onSubmit, loading, error }) => {
-  const [showPassword, setShowPassword] = useState(false);
+// Casca visual compartilhada das telas de acesso (login, cadastro, recuperação).
+// Mantém o mesmo fundo, a coluna de marca e o cartão da tela de login original.
+const AuthShell = ({ onBack, backLabel = "Voltar", badge = "Conexão segura", title, subtitle, error, children, footer }) => {
   const anoAtual = new Date().getFullYear();
-
   return (
     <section
       className="relative min-h-screen w-full flex items-center justify-center overflow-hidden isolate p-[clamp(1rem,3.5vw,2.5rem)]"
@@ -266,7 +364,7 @@ const LoginScreen = ({ username, password, setUsername, setPassword, onSubmit, l
           </div>
         </aside>
 
-        {/* ───── Coluna direita · Card login ───── */}
+        {/* ───── Coluna direita · Card ───── */}
         <main className="relative w-full max-w-[440px] mx-auto lg:ml-auto lg:mr-0 overflow-hidden flex flex-col gap-5 rounded-[22px] p-[clamp(1.75rem,3.5vw,2.5rem)] border border-white/[0.07] backdrop-blur-2xl bg-[#0d181c]/[0.78] shadow-[0_24px_70px_-24px_rgba(0,0,0,0.7),0_8px_32px_-12px_rgba(0,231,252,0.15)]">
           <div
             className="pointer-events-none absolute top-0 left-[15%] right-[15%] h-px"
@@ -274,11 +372,20 @@ const LoginScreen = ({ username, password, setUsername, setPassword, onSubmit, l
           />
 
           <header className="flex flex-col gap-2">
+            {onBack && (
+              <button
+                type="button"
+                onClick={onBack}
+                className="inline-flex w-fit items-center gap-1.5 text-[0.78rem] font-medium text-slate-400 transition-colors hover:text-slate-200"
+              >
+                <span className="text-base leading-none">‹</span> {backLabel}
+              </button>
+            )}
             <span className="inline-flex items-center gap-1.5 w-fit px-2.5 py-1.5 mb-1 rounded-full bg-[#00e7fc]/[0.08] border border-[#00e7fc]/20 text-[#00e7fc] text-[0.7rem] font-semibold uppercase tracking-[0.1em]">
-              <Icon name="lock" size={12} /> Conexão segura
+              <Icon name="lock" size={12} /> {badge}
             </span>
-            <h2 className="text-[1.55rem] font-semibold tracking-tight text-white leading-tight">Bem-vindo de volta</h2>
-            <p className="text-sm text-slate-400">Acesse sua conta para continuar.</p>
+            <h2 className="text-[1.55rem] font-semibold tracking-tight text-white leading-tight">{title}</h2>
+            {subtitle && <p className="text-sm text-slate-400">{subtitle}</p>}
           </header>
 
           {error && (
@@ -288,76 +395,573 @@ const LoginScreen = ({ username, password, setUsername, setPassword, onSubmit, l
             </div>
           )}
 
-          <form onSubmit={onSubmit} className="flex flex-col gap-4" noValidate>
-            {/* Usuário */}
-            <div className="flex flex-col gap-2">
-              <label htmlFor="login-user" className="text-[0.8rem] font-medium text-slate-300">Usuário</label>
-              <div className="relative flex items-center">
-                <span className="absolute left-4 text-slate-500 pointer-events-none"><Icon name="users" size={16} /></span>
-                <input
-                  id="login-user"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  autoComplete="username"
-                  className="w-full h-[54px] pl-11 pr-4 rounded-xl tech-input text-[0.95rem]"
-                  placeholder="admin"
-                  required
-                />
-              </div>
-            </div>
+          {children}
 
-            {/* Senha */}
-            <div className="flex flex-col gap-2">
-              <label htmlFor="login-pass" className="text-[0.8rem] font-medium text-slate-300">Senha</label>
-              <div className="relative flex items-center">
-                <span className="absolute left-4 text-slate-500 pointer-events-none"><Icon name="lock" size={16} /></span>
-                <input
-                  id="login-pass"
-                  type={showPassword ? "text" : "password"}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  autoComplete="current-password"
-                  className="w-full h-[54px] pl-11 pr-12 rounded-xl tech-input text-[0.95rem]"
-                  placeholder="••••••••"
-                  required
-                />
+          {footer}
+        </main>
+      </div>
+    </section>
+  );
+};
+
+// Campo de senha reutilizável com botão de mostrar/ocultar.
+const PasswordField = ({ id, label, value, onChange, placeholder = "••••••••", autoComplete = "current-password" }) => {
+  const [show, setShow] = useState(false);
+  return (
+    <div className="flex flex-col gap-2">
+      <label htmlFor={id} className="text-[0.8rem] font-medium text-slate-300">{label}</label>
+      <div className="relative flex items-center">
+        <span className="absolute left-4 text-slate-500 pointer-events-none"><Icon name="lock" size={16} /></span>
+        <input
+          id={id}
+          type={show ? "text" : "password"}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          autoComplete={autoComplete}
+          className="w-full h-[54px] pl-11 pr-12 rounded-xl tech-input text-[0.95rem]"
+          placeholder={placeholder}
+          required
+        />
+        <button
+          type="button"
+          onClick={() => setShow((v) => !v)}
+          aria-label={show ? "Ocultar senha" : "Mostrar senha"}
+          tabIndex={-1}
+          className="absolute right-2 w-9 h-9 grid place-items-center rounded-lg text-slate-500 hover:text-slate-200 hover:bg-white/5 transition-colors"
+        >
+          {show ? "🙈" : "👁"}
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const LoginScreen = ({ username, password, setUsername, setPassword, onSubmit, loading, error, onBack, onRegister, onForgot }) => (
+  <AuthShell
+    onBack={onBack}
+    backLabel="Voltar à página inicial"
+    title="Bem-vindo de volta"
+    subtitle="Acesse sua conta para continuar."
+    error={error}
+    footer={
+      <p className="text-center text-[13px] text-slate-400">
+        Ainda não tem acesso?{" "}
+        <button type="button" onClick={onRegister} className="font-semibold text-[#00e7fc] hover:text-[#00ff6a] transition-colors">
+          Cadastrar como dono
+        </button>
+      </p>
+    }
+  >
+    <form onSubmit={onSubmit} className="flex flex-col gap-4" noValidate>
+      {/* Usuário */}
+      <div className="flex flex-col gap-2">
+        <label htmlFor="login-user" className="text-[0.8rem] font-medium text-slate-300">Usuário ou e-mail</label>
+        <div className="relative flex items-center">
+          <span className="absolute left-4 text-slate-500 pointer-events-none"><Icon name="users" size={16} /></span>
+          <input
+            id="login-user"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoComplete="username"
+            className="w-full h-[54px] pl-11 pr-4 rounded-xl tech-input text-[0.95rem]"
+            placeholder="seu e-mail ou usuário"
+            required
+          />
+        </div>
+      </div>
+
+      <PasswordField id="login-pass" label="Senha" value={password} onChange={setPassword} autoComplete="current-password" />
+
+      <div className="-mt-1 flex justify-end">
+        <button type="button" onClick={onForgot} className="text-[0.78rem] font-medium text-slate-400 hover:text-[#00e7fc] transition-colors">
+          Esqueci minha senha
+        </button>
+      </div>
+
+      <button
+        type="submit"
+        disabled={loading}
+        className="relative w-full h-[54px] inline-flex items-center justify-center gap-2 rounded-xl tech-button text-[0.95rem] disabled:opacity-55 disabled:cursor-not-allowed"
+      >
+        {loading ? (
+          <>
+            <span className="w-4 h-4 rounded-full border-2 border-[#06262b]/40 border-t-[#06262b] animate-spin" />
+            Entrando...
+          </>
+        ) : (
+          <>
+            Entrar
+            <Icon name="send" size={16} />
+          </>
+        )}
+      </button>
+    </form>
+  </AuthShell>
+);
+
+// Tela de cadastro como dono — fica pendente de aprovação do administrador.
+const RegisterScreen = ({ onBack }) => {
+  const [nome, setNome] = useState("");
+  const [email, setEmail] = useState("");
+  const [senha, setSenha] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [done, setDone] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError("");
+    if (senha.length < 8) { setError("A senha deve ter ao menos 8 caracteres."); return; }
+    setLoading(true);
+    try {
+      await api("/api/auth/register", {
+        method: "POST",
+        auth: false,
+        body: JSON.stringify({
+          nome: nome.trim(),
+          email: email.trim(),
+          senha,
+        }),
+      });
+      setDone(true);
+    } catch (err) {
+      setError(err.message || "Não foi possível concluir o cadastro.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (done) {
+    return (
+      <AuthShell onBack={onBack} backLabel="Voltar ao login" badge="Cadastro enviado" title="Solicitação enviada">
+        <div className="flex flex-col items-center gap-4 text-center">
+          <div className="w-14 h-14 rounded-2xl bg-[#00ff6a]/15 text-[#00ff6a] grid place-items-center">
+            <Icon name="check" size={26} />
+          </div>
+          <p className="text-sm leading-relaxed text-slate-300">
+            Cadastro enviado com sucesso. Aguarde a aprovação do administrador para acessar o sistema.
+          </p>
+          <button onClick={onBack} className="mt-1 w-full h-[50px] inline-flex items-center justify-center gap-2 rounded-xl tech-button text-[0.95rem]">
+            Voltar ao login
+          </button>
+        </div>
+      </AuthShell>
+    );
+  }
+
+  return (
+    <AuthShell
+      onBack={onBack}
+      backLabel="Voltar ao login"
+      badge="Novo acesso"
+      title="Cadastrar como dono"
+      subtitle="Preencha seus dados. Seu acesso passa por aprovação do administrador."
+      error={error}
+    >
+      <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
+        <div className="flex flex-col gap-2">
+          <label htmlFor="reg-nome" className="text-[0.8rem] font-medium text-slate-300">Nome</label>
+          <div className="relative flex items-center">
+            <span className="absolute left-4 text-slate-500 pointer-events-none"><Icon name="users" size={16} /></span>
+            <input id="reg-nome" value={nome} onChange={(e) => setNome(e.target.value)} autoComplete="name"
+              className="w-full h-[54px] pl-11 pr-4 rounded-xl tech-input text-[0.95rem]" placeholder="Seu nome completo" required />
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <label htmlFor="reg-email" className="text-[0.8rem] font-medium text-slate-300">E-mail</label>
+          <div className="relative flex items-center">
+            <span className="absolute left-4 text-slate-500 pointer-events-none"><Icon name="mail" size={16} /></span>
+            <input id="reg-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email"
+              className="w-full h-[54px] pl-11 pr-4 rounded-xl tech-input text-[0.95rem]" placeholder="voce@empresa.com" required />
+          </div>
+        </div>
+
+        <PasswordField id="reg-senha" label="Senha" value={senha} onChange={setSenha} placeholder="Mínimo de 8 caracteres" autoComplete="new-password" />
+
+        <button type="submit" disabled={loading}
+          className="relative w-full h-[54px] inline-flex items-center justify-center gap-2 rounded-xl tech-button text-[0.95rem] disabled:opacity-55 disabled:cursor-not-allowed">
+          {loading ? (
+            <><span className="w-4 h-4 rounded-full border-2 border-[#06262b]/40 border-t-[#06262b] animate-spin" /> Enviando...</>
+          ) : (
+            <>Solicitar acesso <Icon name="send" size={16} /></>
+          )}
+        </button>
+      </form>
+    </AuthShell>
+  );
+};
+
+// Tela "esqueci minha senha" — solicita o e-mail e dispara o link de redefinição.
+const ForgotPasswordScreen = ({ onBack }) => {
+  const [email, setEmail] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [done, setDone] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      await api("/api/auth/esqueci-senha", {
+        method: "POST",
+        auth: false,
+        body: JSON.stringify({ email: email.trim() }),
+      });
+    } catch (_) {
+      // Mensagem genérica independente do resultado (não revela se o e-mail existe).
+    } finally {
+      setLoading(false);
+      setDone(true);
+    }
+  };
+
+  return (
+    <AuthShell
+      onBack={onBack}
+      backLabel="Voltar ao login"
+      badge="Recuperar acesso"
+      title="Redefinir senha"
+      subtitle={done ? null : "Informe o e-mail cadastrado para receber o link de redefinição."}
+    >
+      {done ? (
+        <div className="flex flex-col items-center gap-4 text-center">
+          <div className="w-14 h-14 rounded-2xl bg-[#00e7fc]/15 text-[#00e7fc] grid place-items-center">
+            <Icon name="mail" size={26} />
+          </div>
+          <p className="text-sm leading-relaxed text-slate-300">
+            Se este e-mail estiver cadastrado, enviaremos as instruções de redefinição.
+          </p>
+          <button onClick={onBack} className="mt-1 w-full h-[50px] inline-flex items-center justify-center gap-2 rounded-xl tech-button text-[0.95rem]">
+            Voltar ao login
+          </button>
+        </div>
+      ) : (
+        <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
+          <div className="flex flex-col gap-2">
+            <label htmlFor="forgot-email" className="text-[0.8rem] font-medium text-slate-300">E-mail</label>
+            <div className="relative flex items-center">
+              <span className="absolute left-4 text-slate-500 pointer-events-none"><Icon name="mail" size={16} /></span>
+              <input id="forgot-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email"
+                className="w-full h-[54px] pl-11 pr-4 rounded-xl tech-input text-[0.95rem]" placeholder="voce@empresa.com" required />
+            </div>
+          </div>
+          <button type="submit" disabled={loading}
+            className="relative w-full h-[54px] inline-flex items-center justify-center gap-2 rounded-xl tech-button text-[0.95rem] disabled:opacity-55 disabled:cursor-not-allowed">
+            {loading ? (
+              <><span className="w-4 h-4 rounded-full border-2 border-[#06262b]/40 border-t-[#06262b] animate-spin" /> Enviando...</>
+            ) : (
+              <>Enviar instruções <Icon name="send" size={16} /></>
+            )}
+          </button>
+        </form>
+      )}
+    </AuthShell>
+  );
+};
+
+// ============================================================
+//  LANDING — página institucional exibida antes do login
+//  Apresenta apenas recursos que existem de fato no sistema.
+// ============================================================
+const LANDING_FEATURES = [
+  { icon: "building", title: "Cadastro de empresas", desc: "Organize incorporadoras, construtoras e imobiliárias com consulta automática de dados por CNPJ." },
+  { icon: "users", title: "Decisores", desc: "Identifique sócios e diretores a partir do quadro societário e enriqueça com contatos encontrados na web." },
+  { icon: "phone", title: "Clientes", desc: "Centralize sua carteira de contatos com e-mails e telefones reunidos em massa." },
+  { icon: "map", title: "Mapeamento de mercado", desc: "Levante o mercado de uma região e visualize a prospecção em mapa interativo." },
+  { icon: "megaphone", title: "Campanhas", desc: "Dispare mensagens em massa por WhatsApp ou e-mail para empresas e clientes selecionados." },
+  { icon: "file", title: "Templates", desc: "Modelos de mensagem com variáveis personalizadas para padronizar o atendimento." },
+  { icon: "whatsapp", title: "WhatsApp integrado", desc: "Conecte sua conta, acompanhe conversas e fale com os decisores sem sair do sistema." },
+  { icon: "layers", title: "Complexo DMC", desc: "Esteira de aquisição de ativos: empreendimentos, mapa de ativos, documentos e visão para fundos." },
+];
+
+const LANDING_BENEFITS = [
+  { icon: "database", title: "Tudo centralizado", desc: "Empresas, decisores, clientes, mercado e conversas em um único lugar — sem planilhas espalhadas." },
+  { icon: "spark", title: "Mais agilidade", desc: "Dados de contato e do CNPJ são reunidos automaticamente, reduzindo o trabalho manual de prospecção." },
+  { icon: "chart", title: "Controle do funil", desc: "Acompanhe métricas e o andamento da prospecção pelo painel, com histórico das ações." },
+  { icon: "check", title: "Operação padronizada", desc: "Templates e campanhas garantem comunicação consistente em toda a equipe." },
+];
+
+const LandingPage = ({ onEnter, onRegister }) => {
+  const anoAtual = new Date().getFullYear();
+  const nav = [
+    { href: "#inicio", label: "Início" },
+    { href: "#recursos", label: "Recursos" },
+    { href: "#beneficios", label: "Benefícios" },
+    { href: "#contato", label: "Contato" },
+  ];
+
+  return (
+    <div
+      className="min-h-screen w-full overflow-x-hidden scroll-smooth text-white antialiased"
+      style={{ background: "linear-gradient(180deg, #071417 0%, #04090b 100%)" }}
+    >
+      {/* ───────── Topo / navegação ───────── */}
+      <header className="sticky top-0 z-30 border-b border-white/[0.06] bg-[#06121580]/80 backdrop-blur-xl">
+        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-5 sm:px-8">
+          <a href="#inicio" className="flex items-center gap-3">
+            <span className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-[#12e7ff] to-[#00ff6a] text-[#06262b] shadow-[0_0_20px_rgba(18,231,255,0.35)]">
+              <Icon name="building" size={18} />
+            </span>
+            <span className="text-[#00ff6a] text-sm font-extrabold tracking-[0.32em] leading-none">IMOBPRO</span>
+          </a>
+
+          <nav className="hidden items-center gap-8 md:flex">
+            {nav.map((n) => (
+              <a key={n.href} href={n.href} className="text-sm font-medium text-slate-400 transition-colors hover:text-white">
+                {n.label}
+              </a>
+            ))}
+          </nav>
+
+          <div className="flex items-center gap-2.5">
+            <button
+              onClick={onRegister}
+              className="inline-flex h-10 items-center gap-2 rounded-lg border border-white/12 px-4 text-sm font-medium text-slate-200 transition-colors hover:border-[#12e7ff]/40 hover:text-white"
+            >
+              Criar conta
+            </button>
+            <button
+              onClick={onEnter}
+              className="inline-flex h-10 items-center gap-2 rounded-lg px-5 text-sm tech-button"
+            >
+              Entrar
+              <Icon name="lock" size={14} />
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main>
+        {/* ───────── Hero ───────── */}
+        <section id="inicio" className="relative isolate overflow-hidden">
+          <div className="pointer-events-none absolute inset-0 -z-10" aria-hidden="true">
+            <div
+              className="absolute -right-[12%] -top-[18%] h-[560px] w-[560px] rounded-full opacity-50 blur-[110px]"
+              style={{ background: "radial-gradient(circle, rgba(18,231,255,0.22), transparent 65%)" }}
+            />
+            <div
+              className="absolute -bottom-[20%] -left-[12%] h-[460px] w-[460px] rounded-full opacity-40 blur-[110px]"
+              style={{ background: "radial-gradient(circle, rgba(0,255,106,0.14), transparent 62%)" }}
+            />
+          </div>
+
+          <div className="mx-auto grid max-w-6xl items-center gap-12 px-5 py-20 sm:px-8 lg:grid-cols-[1.05fr_0.95fr] lg:py-28">
+            <div className="flex flex-col gap-7">
+              <span className="inline-flex w-fit items-center gap-2 rounded-full border border-[#12e7ff]/25 bg-[#12e7ff]/[0.07] px-3 py-1.5 text-[0.72rem] font-semibold uppercase tracking-[0.18em] text-[#12e7ff]">
+                <span className="h-1.5 w-1.5 rounded-full bg-[#12e7ff] shadow-[0_0_10px_rgba(18,231,255,0.7)]" />
+                Plataforma de prospecção imobiliária
+              </span>
+
+              <h1 className="text-[clamp(2.3rem,5vw,3.6rem)] font-bold leading-[1.05] tracking-tight">
+                A prospecção da sua imobiliária,
+                <span className="text-gradient"> organizada de ponta a ponta.</span>
+              </h1>
+
+              <p className="max-w-[52ch] text-lg leading-relaxed text-slate-300">
+                O ImobPro reúne empresas, decisores, clientes, mercado e WhatsApp em um só lugar.
+                Pensado para incorporadoras, construtoras, imobiliárias e gestoras de ativos que
+                querem prospectar com método e contexto — sem perder informação pelo caminho.
+              </p>
+
+              <div className="flex flex-wrap items-center gap-4 pt-1">
                 <button
-                  type="button"
-                  onClick={() => setShowPassword((v) => !v)}
-                  aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}
-                  tabIndex={-1}
-                  className="absolute right-2 w-9 h-9 grid place-items-center rounded-lg text-slate-500 hover:text-slate-200 hover:bg-white/5 transition-colors"
+                  onClick={onRegister}
+                  className="inline-flex h-12 items-center gap-2 rounded-xl px-7 text-[0.95rem] tech-button"
                 >
-                  {showPassword ? "🙈" : "👁"}
+                  Criar conta
+                  <Icon name="send" size={16} />
+                </button>
+                <button
+                  onClick={onEnter}
+                  className="inline-flex h-12 items-center gap-2 rounded-xl border border-white/12 px-6 text-[0.95rem] font-medium text-slate-200 transition-colors hover:border-white/25 hover:bg-white/[0.04]"
+                >
+                  Já tenho conta
+                  <Icon name="lock" size={15} />
                 </button>
               </div>
             </div>
 
-            <button
-              type="submit"
-              disabled={loading}
-              className="relative w-full h-[54px] inline-flex items-center justify-center gap-2 rounded-xl tech-button text-[0.95rem] disabled:opacity-55 disabled:cursor-not-allowed"
-            >
-              {loading ? (
-                <>
-                  <span className="w-4 h-4 rounded-full border-2 border-[#06262b]/40 border-t-[#06262b] animate-spin" />
-                  Entrando...
-                </>
-              ) : (
-                <>
-                  Entrar
-                  <Icon name="send" size={16} />
-                </>
-              )}
-            </button>
-          </form>
+            {/* Painel demonstrativo abstrato — construído com a própria UI do sistema */}
+            <div className="relative">
+              <div className="surface-strong relative overflow-hidden rounded-2xl p-5 shadow-[0_30px_80px_-30px_rgba(0,0,0,0.8)]">
+                <div
+                  className="pointer-events-none absolute left-[12%] right-[12%] top-0 h-px"
+                  style={{ background: "linear-gradient(90deg, transparent, rgba(18,231,255,0.5), transparent)" }}
+                />
+                <div className="mb-4 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="grid h-8 w-8 place-items-center rounded-lg bg-[#12e7ff]/15 text-[#12e7ff]"><Icon name="home" size={15} /></span>
+                    <span className="text-sm font-semibold text-slate-200">Visão geral</span>
+                  </div>
+                  <span className="text-[10px] uppercase tracking-widest text-slate-500">Painel</span>
+                </div>
 
-          <p className="text-[11px] text-slate-500 text-center">
-            Configure as credenciais em <span className="text-slate-300">ADMIN_USERNAME</span> e <span className="text-slate-300">ADMIN_PASSWORD</span>.
+                <div className="grid grid-cols-3 gap-3">
+                  {[
+                    { l: "Empresas", v: "128", a: "#12e7ff", i: "building" },
+                    { l: "Decisores", v: "342", a: "#00ff6a", i: "users" },
+                    { l: "Campanhas", v: "17", a: "#f59e0b", i: "megaphone" },
+                  ].map((s) => (
+                    <div key={s.l} className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-3">
+                      <span className="grid h-7 w-7 place-items-center rounded-lg" style={{ background: `${s.a}22`, color: s.a }}>
+                        <Icon name={s.i} size={13} />
+                      </span>
+                      <p className="mt-2 text-xl font-bold tracking-tight">{s.v}</p>
+                      <p className="text-[11px] text-slate-500">{s.l}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-3 space-y-2">
+                  {[
+                    { n: "Mapeamento de mercado", t: "Consolação / Jardins", i: "map" },
+                    { n: "Conversa no WhatsApp", t: "Decisor respondeu", i: "whatsapp" },
+                    { n: "Esteira de aquisição", t: "Complexo DMC", i: "layers" },
+                  ].map((r) => (
+                    <div key={r.n} className="flex items-center gap-3 rounded-xl border border-white/[0.05] bg-white/[0.015] px-3 py-2.5">
+                      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[#12e7ff]/10 text-[#12e7ff]"><Icon name={r.i} size={14} /></span>
+                      <div className="min-w-0 leading-tight">
+                        <p className="truncate text-[13px] font-medium text-slate-200">{r.n}</p>
+                        <p className="truncate text-[11px] text-slate-500">{r.t}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* ───────── O que é / para quem ───────── */}
+        <section className="border-y border-white/[0.05] bg-white/[0.012]">
+          <div className="mx-auto grid max-w-6xl gap-10 px-5 py-16 sm:px-8 md:grid-cols-2">
+            <div>
+              <h2 className="text-2xl font-semibold tracking-tight">Feito para quem vive de prospecção</h2>
+              <p className="mt-3 max-w-[48ch] leading-relaxed text-slate-400">
+                Incorporadoras, construtoras, imobiliárias e gestoras de ativos lidam com muitas frentes ao
+                mesmo tempo: empresas para abordar, decisores a encontrar, mercado a entender e conversas a
+                acompanhar. O ImobPro junta tudo isso em um fluxo único.
+              </p>
+            </div>
+            <div className="grid gap-4">
+              {[
+                "Informações de prospecção espalhadas em planilhas e anotações",
+                "Dificuldade de chegar ao decisor certo dentro de cada empresa",
+                "Falta de visão clara do mercado de uma região",
+                "Contato manual, lento e sem padronização",
+              ].map((p) => (
+                <div key={p} className="flex items-start gap-3">
+                  <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-md bg-[#00ff6a]/12 text-[#00ff6a]"><Icon name="check" size={13} /></span>
+                  <p className="text-sm leading-relaxed text-slate-300">{p}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* ───────── Recursos ───────── */}
+        <section id="recursos" className="mx-auto max-w-6xl px-5 py-20 sm:px-8">
+          <div className="mb-12 max-w-2xl">
+            <span className="text-[0.72rem] font-semibold uppercase tracking-[0.2em] text-[#12e7ff]">Recursos</span>
+            <h2 className="mt-3 text-[clamp(1.8rem,3.5vw,2.5rem)] font-bold tracking-tight">
+              Tudo o que a prospecção precisa, em módulos integrados
+            </h2>
+            <p className="mt-3 leading-relaxed text-slate-400">
+              Cada módulo resolve uma etapa do trabalho e conversa com os demais.
+            </p>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {LANDING_FEATURES.map((f) => (
+              <article
+                key={f.title}
+                className="group surface-strong rounded-2xl p-5 transition-all duration-200 hover:-translate-y-0.5 hover:border-white/20"
+              >
+                <span className="grid h-11 w-11 place-items-center rounded-xl border border-[#12e7ff]/20 bg-[#12e7ff]/[0.07] text-[#12e7ff] transition-colors group-hover:bg-[#12e7ff]/15">
+                  <Icon name={f.icon} size={19} />
+                </span>
+                <h3 className="mt-4 text-[0.98rem] font-semibold text-white">{f.title}</h3>
+                <p className="mt-1.5 text-[13px] leading-relaxed text-slate-400">{f.desc}</p>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        {/* ───────── Benefícios ───────── */}
+        <section id="beneficios" className="border-t border-white/[0.05] bg-white/[0.012]">
+          <div className="mx-auto max-w-6xl px-5 py-20 sm:px-8">
+            <div className="mb-12 max-w-2xl">
+              <span className="text-[0.72rem] font-semibold uppercase tracking-[0.2em] text-[#00ff6a]">Benefícios</span>
+              <h2 className="mt-3 text-[clamp(1.8rem,3.5vw,2.5rem)] font-bold tracking-tight">
+                O que muda no dia a dia da equipe
+              </h2>
+            </div>
+
+            <div className="grid gap-5 sm:grid-cols-2">
+              {LANDING_BENEFITS.map((b) => (
+                <div key={b.title} className="flex items-start gap-4 rounded-2xl border border-white/[0.06] bg-white/[0.015] p-6">
+                  <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-[#12e7ff]/18 to-[#00ff6a]/14 text-[#12e7ff]">
+                    <Icon name={b.icon} size={19} />
+                  </span>
+                  <div>
+                    <h3 className="text-[1.02rem] font-semibold text-white">{b.title}</h3>
+                    <p className="mt-1.5 text-sm leading-relaxed text-slate-400">{b.desc}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* ───────── Chamada final ───────── */}
+        <section id="contato" className="mx-auto max-w-6xl px-5 py-24 sm:px-8">
+          <div className="relative overflow-hidden rounded-3xl border border-[#12e7ff]/15 px-8 py-14 text-center"
+            style={{ background: "radial-gradient(ellipse 80% 120% at 50% 0%, rgba(18,231,255,0.10), transparent 60%), linear-gradient(180deg, rgba(13,38,41,0.6), rgba(8,25,27,0.6))" }}
+          >
+            <h2 className="mx-auto max-w-2xl text-[clamp(1.9rem,3.8vw,2.6rem)] font-bold tracking-tight">
+              Pronto para prospectar com mais método?
+            </h2>
+            <p className="mx-auto mt-4 max-w-xl leading-relaxed text-slate-300">
+              Crie sua conta para solicitar acesso ou entre com suas credenciais e continue de onde parou.
+            </p>
+            <div className="mt-8 flex flex-wrap justify-center gap-3">
+              <button
+                onClick={onRegister}
+                className="inline-flex h-12 items-center gap-2 rounded-xl px-8 text-[0.95rem] tech-button"
+              >
+                Criar conta
+                <Icon name="send" size={16} />
+              </button>
+              <button
+                onClick={onEnter}
+                className="inline-flex h-12 items-center gap-2 rounded-xl border border-white/12 px-7 text-[0.95rem] font-medium text-slate-200 transition-colors hover:border-white/25 hover:bg-white/[0.04]"
+              >
+                Entrar
+                <Icon name="lock" size={15} />
+              </button>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      {/* ───────── Rodapé ───────── */}
+      <footer className="border-t border-white/[0.06]">
+        <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-5 py-8 sm:flex-row sm:px-8">
+          <div className="flex items-center gap-3">
+            <span className="grid h-8 w-8 place-items-center rounded-lg bg-gradient-to-br from-[#12e7ff] to-[#00ff6a] text-[#06262b]">
+              <Icon name="building" size={15} />
+            </span>
+            <div className="leading-tight">
+              <p className="text-[#00ff6a] text-xs font-extrabold tracking-[0.3em]">IMOBPRO</p>
+              <p className="text-[11px] text-slate-500">Prospecção imobiliária</p>
+            </div>
+          </div>
+          <p className="text-center text-xs text-slate-500 sm:text-right">
+            © {anoAtual} Complexo DMC · Todos os direitos reservados
           </p>
-        </main>
-      </div>
-    </section>
+        </div>
+      </footer>
+    </div>
   );
 };
 
@@ -881,6 +1485,8 @@ export default function App() {
   const [loginPassword, setLoginPassword] = useState("admin123");
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginError, setLoginError] = useState("");
+  const [showLogin, setShowLogin] = useState(false); // landing institucional antes do login
+  const [authMode, setAuthMode] = useState("login"); // "login" | "register" | "forgot"
   const [page, setPage] = useState("dashboard");
   const [stats, setStats] = useState(null);
   const [empresas, setEmpresas] = useState([]);
@@ -959,6 +1565,22 @@ export default function App() {
   const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [editingTemplateId, setEditingTemplateId] = useState(null);
   const [enriching, setEnriching] = useState(false);
+  // ---- Tarefas ----
+  const TAREFA_FORM_VAZIO = { titulo: "", descricao: "", responsavel: "", prioridade: "media", status: "pendente", data_vencimento: "", observacoes: "" };
+  const [tarefas, setTarefas] = useState([]);
+  const [tarefasResumo, setTarefasResumo] = useState({ total: 0, pendentes: 0, em_andamento: 0, concluidas: 0, vencidas: 0 });
+  const [tarefasLoading, setTarefasLoading] = useState(false);
+  const [tarefaBusca, setTarefaBusca] = useState("");
+  const [tarefaFiltroStatus, setTarefaFiltroStatus] = useState("");
+  const [tarefaFiltroPrioridade, setTarefaFiltroPrioridade] = useState("");
+  const [tarefaFiltroResponsavel, setTarefaFiltroResponsavel] = useState("");
+  const [tarefaFiltroVenceAte, setTarefaFiltroVenceAte] = useState("");
+  const [tarefaFiltroVencidas, setTarefaFiltroVencidas] = useState(false);
+  const [tarefaForm, setTarefaForm] = useState(TAREFA_FORM_VAZIO);
+  const [showTarefaModal, setShowTarefaModal] = useState(false);
+  const [editingTarefaId, setEditingTarefaId] = useState(null);
+  const [tarefaView, setTarefaView] = useState(null);
+  const [tarefaSaving, setTarefaSaving] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -1242,6 +1864,39 @@ export default function App() {
       setCampanhas(data);
     } catch (e) {}
   }, []);
+
+  const excluirCampanha = useCallback(async (c) => {
+    if (!confirm(`Excluir a campanha "${c.nome}"?`)) return;
+    try {
+      await api(`/api/campanhas/${c.id}`, { method: "DELETE" });
+      setCampanhas(prev => prev.filter(x => x.id !== c.id));
+    } catch (e) {
+      alert("Erro ao excluir: " + e.message);
+    }
+  }, []);
+
+  const loadTarefas = useCallback(async () => {
+    setTarefasLoading(true);
+    try {
+      const qs = new URLSearchParams();
+      if (tarefaBusca.trim()) qs.set("busca", tarefaBusca.trim());
+      if (tarefaFiltroStatus) qs.set("status", tarefaFiltroStatus);
+      if (tarefaFiltroPrioridade) qs.set("prioridade", tarefaFiltroPrioridade);
+      if (tarefaFiltroResponsavel) qs.set("responsavel", tarefaFiltroResponsavel);
+      if (tarefaFiltroVenceAte) qs.set("vence_ate", tarefaFiltroVenceAte);
+      if (tarefaFiltroVencidas) qs.set("vencidas", "true");
+      const query = qs.toString();
+      const [lista, resumo] = await Promise.all([
+        api(`/api/tarefas${query ? `?${query}` : ""}`),
+        api("/api/tarefas/resumo"),
+      ]);
+      setTarefas(Array.isArray(lista) ? lista : []);
+      if (resumo) setTarefasResumo(resumo);
+    } catch (e) {
+    } finally {
+      setTarefasLoading(false);
+    }
+  }, [tarefaBusca, tarefaFiltroStatus, tarefaFiltroPrioridade, tarefaFiltroResponsavel, tarefaFiltroVenceAte, tarefaFiltroVencidas]);
 
   const loadCampaignTargets = useCallback(async () => {
     try {
@@ -1595,10 +2250,11 @@ export default function App() {
     if (page === "decisores") loadDecisores();
     if (page === "clientes") loadClientes();
     if (page === "templates") loadTemplates();
+    if (page === "tarefas") loadTarefas();
     if (page === "campanhas") { loadCampanhas(); loadTemplates(); loadCampaignTargets(); loadClientes(); }
     if (page === "mercado") loadMarket();
     if (page === "conversas") loadInbox();
-  }, [isAuthed, page, loadEmpresas, loadDecisores, loadClientes, loadTemplates, loadCampanhas, loadMarket, loadInbox, loadCampaignTargets]);
+  }, [isAuthed, page, loadEmpresas, loadDecisores, loadClientes, loadTemplates, loadTarefas, loadCampanhas, loadMarket, loadInbox, loadCampaignTargets]);
 
   // Tela Conversas: atualiza inbox e thread ativa ao vivo (espelho do WhatsApp)
   useEffect(() => {
@@ -1700,6 +2356,12 @@ export default function App() {
   const msgsHoje = Number(dashboardStats.msgs_hoje || 0);
   const campanhasAtivas = Number(dashboardStats.campanhas_ativas || 0);
   const empresasSemWhats = Math.max(totalEmpresas - totalComWhats, 0);
+  const empresasEmAtendimento = Number(dashboardStats.empresas_em_atendimento || 0);
+  const totalEmails = Number(dashboardStats.total_emails || 0);
+  const totalTelefones = Number(dashboardStats.total_telefones || 0);
+  const campanhasResumo = stats?.campanhas_resumo || {};
+  const campWhats = campanhasResumo.whatsapp || {};
+  const campEmail = campanhasResumo.email || {};
   const tiposBase = Array.isArray(stats?.por_tipo)
     ? [...stats.por_tipo].sort((a, b) => Number(b.total || 0) - Number(a.total || 0))
     : [];
@@ -1760,6 +2422,96 @@ export default function App() {
       loadTemplates();
     } catch (e) {
       alert("Erro: " + e.message);
+    }
+  };
+
+  // ---- Tarefas: abrir/editar/salvar/arquivar/concluir ----
+  const openNovaTarefa = (presetData) => {
+    setEditingTarefaId(null);
+    setTarefaForm({ ...TAREFA_FORM_VAZIO, data_vencimento: typeof presetData === "string" ? presetData : "" });
+    setShowTarefaModal(true);
+  };
+
+  const openEditarTarefa = (t) => {
+    setEditingTarefaId(t.id);
+    setTarefaForm({
+      titulo: t.titulo || "",
+      descricao: t.descricao || "",
+      responsavel: t.responsavel || "",
+      prioridade: t.prioridade || "media",
+      status: t.status || "pendente",
+      data_vencimento: t.data_vencimento || "",
+      observacoes: t.observacoes || "",
+    });
+    setTarefaView(null);
+    setShowTarefaModal(true);
+  };
+
+  const handleSalvarTarefa = async () => {
+    if (!tarefaForm.titulo.trim()) {
+      alert("Informe o título da tarefa.");
+      return;
+    }
+    setTarefaSaving(true);
+    try {
+      const payload = JSON.stringify({
+        ...tarefaForm,
+        titulo: tarefaForm.titulo.trim(),
+        data_vencimento: tarefaForm.data_vencimento || null,
+      });
+      if (editingTarefaId) {
+        await api(`/api/tarefas/${editingTarefaId}`, { method: "PUT", body: payload });
+      } else {
+        await api("/api/tarefas", { method: "POST", body: payload });
+      }
+      setShowTarefaModal(false);
+      setEditingTarefaId(null);
+      setTarefaForm(TAREFA_FORM_VAZIO);
+      loadTarefas();
+    } catch (e) {
+      alert("Erro: " + e.message);
+    } finally {
+      setTarefaSaving(false);
+    }
+  };
+
+  const handleArquivarTarefa = async (t) => {
+    if (!confirm(`Arquivar a tarefa "${t.titulo}"? Ela sai da lista, mas o histórico é preservado.`)) return;
+    try {
+      await api(`/api/tarefas/${t.id}`, { method: "DELETE" });
+      setTarefaView(null);
+      loadTarefas();
+    } catch (e) {
+      alert("Erro: " + e.message);
+    }
+  };
+
+  const handleMudarStatusTarefa = async (t, novoStatus) => {
+    try {
+      const atualizada = await api(`/api/tarefas/${t.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ status: novoStatus }),
+      });
+      setTarefaView((v) => (v && v.id === t.id ? atualizada : v));
+      loadTarefas();
+    } catch (e) {
+      alert("Erro: " + e.message);
+    }
+  };
+
+  // Arrastar uma tarefa para outro dia no calendário (reagenda o vencimento).
+  const handleMoverTarefa = async (t, novaData) => {
+    // Atualização otimista para o arraste parecer instantâneo.
+    setTarefas((lista) => lista.map((x) => (x.id === t.id ? { ...x, data_vencimento: novaData } : x)));
+    try {
+      await api(`/api/tarefas/${t.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ data_vencimento: novaData }),
+      });
+      loadTarefas();
+    } catch (e) {
+      alert("Erro: " + e.message);
+      loadTarefas();
     }
   };
 
@@ -1857,6 +2609,18 @@ export default function App() {
   }
 
   if (!isAuthed) {
+    if (!showLogin) {
+      return <LandingPage
+        onEnter={() => { setAuthMode("login"); setShowLogin(true); }}
+        onRegister={() => { setAuthMode("register"); setShowLogin(true); }}
+      />;
+    }
+    if (authMode === "register") {
+      return <RegisterScreen onBack={() => { setLoginError(""); setAuthMode("login"); }} />;
+    }
+    if (authMode === "forgot") {
+      return <ForgotPasswordScreen onBack={() => { setLoginError(""); setAuthMode("login"); }} />;
+    }
     return (
       <LoginScreen
         username={loginUsername}
@@ -1866,6 +2630,9 @@ export default function App() {
         onSubmit={handleLogin}
         loading={loginLoading}
         error={loginError}
+        onBack={() => setShowLogin(false)}
+        onRegister={() => { setLoginError(""); setAuthMode("register"); }}
+        onForgot={() => { setLoginError(""); setAuthMode("forgot"); }}
       />
     );
   }
@@ -1878,6 +2645,8 @@ export default function App() {
     { id: "mercado", icon: "map", label: "Mercado" },
     { id: "campanhas", icon: "megaphone", label: "Campanhas" },
     { id: "templates", icon: "file", label: "Templates" },
+    { id: "tarefas", icon: "tasks", label: "Tarefas" },
+    { id: "equipes", icon: "users", label: "Equipes" },
     { id: "conversas", icon: "phone", label: "Conversas" },
     { id: "whatsapp", icon: "whatsapp", label: "WhatsApp" },
   ];
@@ -1948,7 +2717,7 @@ export default function App() {
       <main className="flex-1 flex flex-col overflow-hidden">
         <div className="h-16 flex-shrink-0 px-8 lg:px-10 flex items-center justify-between border-b border-white/5 bg-black/15 backdrop-blur-sm">
           <div>
-            <h2 className="text-white font-semibold text-sm tracking-wide">{page === "dashboard" ? "Dashboard" : page === "empresas" ? "Empresas" : page === "decisores" ? "Decisores" : page === "clientes" ? "Clientes" : page === "mercado" ? "Mercado" : page === "campanhas" ? "Campanhas" : page === "templates" ? "Templates" : page === "conversas" ? "Conversas" : page === "whatsapp" ? "WhatsApp" : "Complexo DMC"}</h2>
+            <h2 className="text-white font-semibold text-sm tracking-wide">{page === "dashboard" ? "Dashboard" : page === "empresas" ? "Empresas" : page === "decisores" ? "Decisores" : page === "clientes" ? "Clientes" : page === "mercado" ? "Mercado" : page === "campanhas" ? "Campanhas" : page === "templates" ? "Templates" : page === "tarefas" ? "Tarefas" : page === "conversas" ? "Conversas" : page === "whatsapp" ? "WhatsApp" : "Complexo DMC"}</h2>
             <p className="text-slate-500 text-xs">Sistema autenticado</p>
           </div>
           <div className="flex items-center gap-3">
@@ -1971,6 +2740,9 @@ export default function App() {
 
           {/* COMPLEXO DMC — seções nativas (mesmo tema do ImobPro) */}
           {page.startsWith("dmc:") && <DMCPlatform secaoControlada={page.slice(4)} />}
+
+          {/* EQUIPES & COLABORADORES — produtividade a partir de eventos reais */}
+          {page === "equipes" && <EquipesPanel api={api} currentUser={authUser} />}
 
           {/* CONVERSAS (espelho do WhatsApp — tema claro estilo WhatsApp Web) */}
           {page === "conversas" && (
@@ -2080,31 +2852,42 @@ export default function App() {
                       enriquecimento de CNPJ, campanhas, templates e WhatsApp integrado via Evolution API.
                     </p>
                     <div className="mt-6 grid grid-cols-2 md:grid-cols-4 gap-3">
-                      <div className="rounded-2xl border border-white/8 bg-black/15 p-4">
-                        <div className="text-slate-500 text-xs uppercase tracking-[0.18em]">Base</div>
-                        <div className="text-white text-2xl font-semibold mt-2">{totalEmpresas}</div>
-                        <div className="text-slate-400 text-xs mt-1">empresas cadastradas</div>
-                      </div>
-                      <div className="rounded-2xl border border-white/8 bg-black/15 p-4">
-                        <div className="text-slate-500 text-xs uppercase tracking-[0.18em]">CNPJ</div>
-                        <div className="text-white text-2xl font-semibold mt-2">{totalComCnpj}</div>
-                        <div className="text-slate-400 text-xs mt-1">empresas enriquecidas</div>
-                      </div>
-                      <div className="rounded-2xl border border-white/8 bg-black/15 p-4">
-                        <div className="text-slate-500 text-xs uppercase tracking-[0.18em]">Mensagens</div>
-                        <div className="text-white text-2xl font-semibold mt-2">{msgsHoje}</div>
-                        <div className="text-slate-400 text-xs mt-1">enviadas hoje</div>
-                      </div>
-                      <div className="rounded-2xl border border-white/8 bg-black/15 p-4">
-                        <div className="text-slate-500 text-xs uppercase tracking-[0.18em]">Conversas</div>
-                        <div className="text-white text-2xl font-semibold mt-2">{totalConversas}</div>
-                        <div className="text-slate-400 text-xs mt-1">threads ativas</div>
-                      </div>
+                      {[
+                        { icon: "building", label: "Empresas", value: totalEmpresas, hint: "cadastradas na base", color: "#12e7ff" },
+                        { icon: "whatsapp", label: "Atendimento", value: empresasEmAtendimento, hint: "empresas no WhatsApp", color: "#00ff6a" },
+                        { icon: "mail", label: "E-mails", value: totalEmails, hint: "únicos na base", color: "#8b5cf6" },
+                        { icon: "phone", label: "Telefones", value: totalTelefones, hint: "únicos na base", color: "#f59e0b" },
+                      ].map(kpi => (
+                        <div key={kpi.label} className="rounded-2xl border border-white/8 bg-black/15 p-4">
+                          <div className="flex items-center gap-2 text-slate-500 text-xs uppercase tracking-[0.18em]">
+                            <span style={{ color: kpi.color }}><Icon name={kpi.icon} size={15} /></span>
+                            {kpi.label}
+                          </div>
+                          <div className="text-white text-3xl font-semibold mt-2 leading-none">{fmtNum(kpi.value)}</div>
+                          <div className="text-slate-400 text-xs mt-2">{kpi.hint}</div>
+                        </div>
+                      ))}
                     </div>
                   </div>
 
                 </div>
               </div>
+
+              <CampanhaSituacao
+                titulo="Campanhas de WhatsApp"
+                icon="whatsapp"
+                data={campWhats}
+                unidade="Mensagens"
+                vazioMsg="Nenhuma campanha de WhatsApp registrada ainda. A situação aparece automaticamente assim que houver disparos."
+              />
+
+              <CampanhaSituacao
+                titulo="Campanhas de e-mail"
+                icon="mail"
+                data={campEmail}
+                unidade="E-mails"
+                vazioMsg="Nenhuma campanha de e-mail registrada ainda. A situação aparece automaticamente assim que houver disparos."
+              />
 
               <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
                 <div className="surface-strong rounded-2xl p-5">
@@ -2870,6 +3653,103 @@ export default function App() {
             </div>
           )}
 
+          {/* TAREFAS */}
+          {page === "tarefas" && (
+            <div className="space-y-5">
+              {/* Cabeçalho */}
+              <div className="flex items-start justify-between gap-4 flex-wrap">
+                <div>
+                  <h3 className="text-white font-semibold text-lg">Tarefas</h3>
+                  <p className="text-slate-400 text-sm mt-1">Agenda inteligente das atividades internas: visualize por dia, semana, mês ou lista, filtre por responsável, status e prioridade. Clique num dia para criar e arraste uma tarefa para reagendá-la.</p>
+                </div>
+                <button onClick={openNovaTarefa}
+                  className="px-4 py-2.5 tech-button rounded-xl text-white text-sm font-medium flex items-center gap-2">
+                  <Icon name="plus" size={14} /> Nova tarefa
+                </button>
+              </div>
+
+              {/* Cards de resumo */}
+              <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
+                {[
+                  { label: "Total", value: tarefasResumo.total, icon: "tasks", color: "#12e7ff" },
+                  { label: "Pendentes", value: tarefasResumo.pendentes, icon: "clock", color: "#f59e0b" },
+                  { label: "Em andamento", value: tarefasResumo.em_andamento, icon: "refresh", color: "#38bdf8" },
+                  { label: "Concluídas", value: tarefasResumo.concluidas, icon: "check", color: "#00ff6a" },
+                  { label: "Vencidas", value: tarefasResumo.vencidas, icon: "alert", color: "#fb7185" },
+                ].map((c) => (
+                  <div key={c.label} className="surface-strong rounded-2xl p-4">
+                    <div className="flex items-center gap-2 text-slate-500 text-xs uppercase tracking-[0.16em]">
+                      <span style={{ color: c.color }}><Icon name={c.icon} size={15} /></span>
+                      {c.label}
+                    </div>
+                    <div className="text-white text-3xl font-semibold mt-2 leading-none">{fmtNum(c.value)}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Filtros e pesquisa */}
+              <div className="surface-strong rounded-2xl p-4 space-y-3">
+                <div className="flex flex-wrap gap-3">
+                  <div className="relative flex-1 min-w-[220px]">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500"><Icon name="search" size={16} /></span>
+                    <input value={tarefaBusca} onChange={(e) => setTarefaBusca(e.target.value)}
+                      placeholder="Pesquisar por título ou descrição..."
+                      className="w-full pl-9 pr-4 py-2.5 tech-input rounded-xl text-sm" />
+                  </div>
+                  <select value={tarefaFiltroStatus} onChange={(e) => setTarefaFiltroStatus(e.target.value)}
+                    className="surface-soft rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-[#00e7fc]">
+                    <option value="">Todos os status</option>
+                    {TAREFA_STATUS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+                  </select>
+                  <select value={tarefaFiltroPrioridade} onChange={(e) => setTarefaFiltroPrioridade(e.target.value)}
+                    className="surface-soft rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-[#00e7fc]">
+                    <option value="">Todas as prioridades</option>
+                    {TAREFA_PRIORIDADES.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+                  </select>
+                  <select value={tarefaFiltroResponsavel} onChange={(e) => setTarefaFiltroResponsavel(e.target.value)}
+                    className="surface-soft rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-[#00e7fc]">
+                    <option value="">Todos os responsáveis</option>
+                    <option value="__sem__">Sem responsável</option>
+                    {[...new Set(tarefas.map((t) => t.responsavel).filter(Boolean))].map((r) => (
+                      <option key={r} value={r}>{r}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <label className="text-slate-400 text-sm flex items-center gap-2">
+                    Vence até:
+                    <input type="date" value={tarefaFiltroVenceAte} onChange={(e) => setTarefaFiltroVenceAte(e.target.value)}
+                      className="tech-input rounded-xl px-3 py-2 text-sm text-white" />
+                  </label>
+                  <label className="text-slate-300 text-sm flex items-center gap-2 cursor-pointer select-none">
+                    <input type="checkbox" checked={tarefaFiltroVencidas} onChange={(e) => setTarefaFiltroVencidas(e.target.checked)}
+                      className="accent-[#fb7185] w-4 h-4" />
+                    Somente vencidas
+                  </label>
+                  {(tarefaBusca || tarefaFiltroStatus || tarefaFiltroPrioridade || tarefaFiltroResponsavel || tarefaFiltroVenceAte || tarefaFiltroVencidas) && (
+                    <button onClick={() => { setTarefaBusca(""); setTarefaFiltroStatus(""); setTarefaFiltroPrioridade(""); setTarefaFiltroResponsavel(""); setTarefaFiltroVenceAte(""); setTarefaFiltroVencidas(false); }}
+                      className="ml-auto text-slate-400 hover:text-white text-sm flex items-center gap-1">
+                      <Icon name="x" size={14} /> Limpar filtros
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Agenda / calendário das tarefas */}
+              <AgendaCalendar
+                tarefas={tarefas}
+                loading={tarefasLoading}
+                Icon={Icon}
+                corDaTarefa={tarefaCor}
+                prioridades={TAREFA_PRIORIDADES}
+                statusList={TAREFA_STATUS}
+                onNova={openNovaTarefa}
+                onAbrir={setTarefaView}
+                onMover={handleMoverTarefa}
+              />
+            </div>
+          )}
+
           {/* CAMPANHAS */}
           {page === "campanhas" && (
             <div className="space-y-5">
@@ -3284,11 +4164,20 @@ export default function App() {
                         <h3 className="text-white font-semibold">{c.nome}</h3>
                         <p className="text-slate-500 text-sm mt-0.5">{c.descricao}</p>
                       </div>
-                      <Badge color={
-                        c.status === "concluida" ? "emerald" :
-                        c.status === "em_andamento" ? "amber" :
-                        c.status === "rascunho" ? "slate" : "sky"
-                      }>{c.status}</Badge>
+                      <div className="flex items-center gap-2">
+                        <Badge color={
+                          c.status === "concluida" ? "emerald" :
+                          c.status === "em_andamento" ? "amber" :
+                          c.status === "rascunho" ? "slate" : "sky"
+                        }>{c.status}</Badge>
+                        <button
+                          onClick={() => excluirCampanha(c)}
+                          title="Excluir campanha"
+                          className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
+                        >
+                          <Icon name="trash" size={16} />
+                        </button>
+                      </div>
                     </div>
                     <div className="flex gap-6 mt-4 pt-4 border-t border-[#00e7fc]/8">
                       <div className="text-center">
@@ -3515,6 +4404,113 @@ export default function App() {
             <Icon name={editingTemplateId ? "check" : "plus"} size={14} /> {editingTemplateId ? "Salvar alterações" : "Criar template"}
           </button>
         </div>
+      </Modal>
+
+      {/* NOVA / EDITAR TAREFA */}
+      <Modal open={showTarefaModal} onClose={() => { setShowTarefaModal(false); setEditingTarefaId(null); }} title={editingTarefaId ? "Editar tarefa" : "Nova tarefa"}>
+        <div className="space-y-4">
+          <div>
+            <label className="text-slate-400 text-sm block mb-1.5">Título <span className="text-rose-400">*</span></label>
+            <input value={tarefaForm.titulo} onChange={(e) => setTarefaForm((p) => ({ ...p, titulo: e.target.value }))}
+              placeholder="Ex: Ligar para o cliente X"
+              className="w-full tech-input rounded-xl px-3 py-2 text-white text-sm" />
+          </div>
+          <div>
+            <label className="text-slate-400 text-sm block mb-1.5">Descrição</label>
+            <textarea value={tarefaForm.descricao} onChange={(e) => setTarefaForm((p) => ({ ...p, descricao: e.target.value }))}
+              placeholder="Detalhes da tarefa..." rows={3}
+              className="w-full tech-input rounded-xl px-3 py-2 text-white text-sm resize-none" />
+          </div>
+          <div>
+            <label className="text-slate-400 text-sm block mb-1.5">Responsável</label>
+            <input value={tarefaForm.responsavel} onChange={(e) => setTarefaForm((p) => ({ ...p, responsavel: e.target.value }))}
+              placeholder="Nome do responsável (deixe em branco para “Sem responsável”)"
+              className="w-full tech-input rounded-xl px-3 py-2 text-white text-sm" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-slate-400 text-sm block mb-1.5">Prioridade <span className="text-rose-400">*</span></label>
+              <select value={tarefaForm.prioridade} onChange={(e) => setTarefaForm((p) => ({ ...p, prioridade: e.target.value }))}
+                className="w-full tech-input rounded-xl px-3 py-2 text-white text-sm">
+                {TAREFA_PRIORIDADES.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-slate-400 text-sm block mb-1.5">Status <span className="text-rose-400">*</span></label>
+              <select value={tarefaForm.status} onChange={(e) => setTarefaForm((p) => ({ ...p, status: e.target.value }))}
+                className="w-full tech-input rounded-xl px-3 py-2 text-white text-sm">
+                {TAREFA_STATUS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="text-slate-400 text-sm block mb-1.5">Data de vencimento</label>
+            <input type="date" value={tarefaForm.data_vencimento} onChange={(e) => setTarefaForm((p) => ({ ...p, data_vencimento: e.target.value }))}
+              className="w-full tech-input rounded-xl px-3 py-2 text-white text-sm" />
+          </div>
+          <div>
+            <label className="text-slate-400 text-sm block mb-1.5">Observações</label>
+            <textarea value={tarefaForm.observacoes} onChange={(e) => setTarefaForm((p) => ({ ...p, observacoes: e.target.value }))}
+              placeholder="Anotações adicionais..." rows={2}
+              className="w-full tech-input rounded-xl px-3 py-2 text-white text-sm resize-none" />
+          </div>
+          <button onClick={handleSalvarTarefa} disabled={!tarefaForm.titulo.trim() || tarefaSaving}
+            className="w-full py-2.5 tech-button rounded-xl text-white text-sm font-medium disabled:opacity-50 transition-colors flex items-center justify-center gap-2">
+            <Icon name={editingTarefaId ? "check" : "plus"} size={14} /> {tarefaSaving ? "Salvando…" : (editingTarefaId ? "Salvar alterações" : "Criar tarefa")}
+          </button>
+        </div>
+      </Modal>
+
+      {/* VISUALIZAR TAREFA */}
+      <Modal open={!!tarefaView} onClose={() => setTarefaView(null)} title={tarefaView?.titulo || "Tarefa"}>
+        {tarefaView && (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge color={tarefaPrioridadeInfo(tarefaView.prioridade).color}>Prioridade: {tarefaPrioridadeInfo(tarefaView.prioridade).label}</Badge>
+              <Badge color={tarefaStatusInfo(tarefaView.status).color}>{tarefaStatusInfo(tarefaView.status).label}</Badge>
+              {tarefaView.vencida && <Badge color="rose">Vencida</Badge>}
+            </div>
+            {tarefaView.descricao && (
+              <div>
+                <div className="text-slate-500 text-xs uppercase tracking-[0.14em] mb-1">Descrição</div>
+                <p className="text-slate-200 text-sm whitespace-pre-line">{tarefaView.descricao}</p>
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div>
+                <div className="text-slate-500 text-xs uppercase tracking-[0.14em] mb-1">Responsável</div>
+                <div className="text-slate-200">{tarefaView.responsavel || "Sem responsável"}</div>
+              </div>
+              <div>
+                <div className="text-slate-500 text-xs uppercase tracking-[0.14em] mb-1">Vencimento</div>
+                <div className={tarefaView.vencida ? "text-rose-400" : "text-slate-200"}>{fmtData(tarefaView.data_vencimento)}</div>
+              </div>
+            </div>
+            {tarefaView.observacoes && (
+              <div>
+                <div className="text-slate-500 text-xs uppercase tracking-[0.14em] mb-1">Observações</div>
+                <p className="text-slate-200 text-sm whitespace-pre-line">{tarefaView.observacoes}</p>
+              </div>
+            )}
+            <div>
+              <label className="text-slate-400 text-sm block mb-1.5">Alterar status</label>
+              <select value={tarefaView.status} onChange={(e) => handleMudarStatusTarefa(tarefaView, e.target.value)}
+                className="w-full tech-input rounded-xl px-3 py-2 text-white text-sm">
+                {TAREFA_STATUS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+              </select>
+            </div>
+            <div className="flex gap-2 pt-1">
+              <button onClick={() => openEditarTarefa(tarefaView)}
+                className="flex-1 py-2.5 tech-button rounded-xl text-white text-sm font-medium flex items-center justify-center gap-2">
+                <Icon name="edit" size={14} /> Editar
+              </button>
+              <button onClick={() => handleArquivarTarefa(tarefaView)}
+                className="px-4 py-2.5 rounded-xl border border-rose-400/40 text-rose-300 text-sm hover:bg-rose-400/10 transition-colors flex items-center gap-2">
+                <Icon name="trash" size={14} /> Arquivar
+              </button>
+            </div>
+          </div>
+        )}
       </Modal>
 
       {/* SALVAR DECISOR COMO CONTATO */}

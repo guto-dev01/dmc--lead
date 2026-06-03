@@ -1,10 +1,18 @@
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import declarative_base, sessionmaker
+import re
+import uuid
+from datetime import datetime, timezone
+from typing import Optional
+
 from pydantic_settings import BaseSettings
-import asyncpg
+from pymongo import AsyncMongoClient
+from pymongo.asynchronous.database import AsyncDatabase
+
 
 class Settings(BaseSettings):
-    database_url: str = "postgresql+asyncpg://imobpro:imobpro123@localhost:5432/imobpro"
+    # MongoDB — dados do ImobPro. Em produção use uma URI do MongoDB Atlas
+    # (mongodb+srv://...). Local/docker: mongodb://mongo:27017
+    mongo_url: str = "mongodb://localhost:27017"
+    mongo_db: str = "imobpro"
     evolution_api_url: str = "http://localhost:8080"
     evolution_api_key: str = ""
     evolution_instance: str = "imobpro"
@@ -20,6 +28,16 @@ class Settings(BaseSettings):
     brave_api_key: str = ""
     admin_username: str = "admin"
     admin_password: str = "admin123"
+    # E-mail do dono principal — recebe as solicitações de novos cadastros para
+    # aprovar/recusar. Se vazio, usa o SMTP_FROM como destinatário.
+    dono_principal_email: str = ""
+    # E-mail do dono da "conta principal" — dono dos dados legados (migração) e
+    # da base semeada (seed). Usado pelo script de migração e pelo schema.
+    conta_principal_email: str = "nathalial@complexodmc.com.br"
+    # URL pública do frontend (usada para montar o link de redefinição de senha
+    # enviado por e-mail). Ex.: https://app.suaempresa.com. Se vazio, tenta o
+    # FRONTEND_ORIGIN; por fim cai no backend_public_url.
+    app_public_url: str = ""
     # SMTP (disparo de e-mail). Porta 465 = SSL implícito; 587 = STARTTLS.
     smtp_host: str = ""
     smtp_port: int = 587
@@ -32,90 +50,80 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
 
+
 settings = Settings()
 
-DATABASE_URL = settings.database_url.replace("postgresql://", "postgresql+asyncpg://")
-
-engine = create_async_engine(
-    DATABASE_URL,
-    echo=False,
-    pool_size=10,          # conexões persistentes para o ORM/SQLAlchemy
-    max_overflow=10,       # picos
-    pool_pre_ping=True,    # descarta conexões mortas antes de usar
-    pool_recycle=1800,     # recicla a cada 30 min (evita timeouts do Postgres)
-)
-AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-Base = declarative_base()
-
-async def get_db():
-    async with AsyncSessionLocal() as session:
-        try:
-            yield session
-        finally:
-            await session.close()
-
 
 # ---------------------------------------------------------------------------
-# Pool asyncpg compartilhado
+# Cliente MongoDB compartilhado
 #
-# Os routers usam SQL cru via asyncpg. Antes cada request abria UMA conexão
-# nova (asyncpg.connect) e fechava no fim — caro e frágil sob carga. Agora há
-# um pool único, criado no startup. `get_conn()` é um drop-in: os routers
-# continuam fazendo `conn = await get_conn()` / `await conn.close()`, mas agora
-# pegam/devolvem do pool em vez de abrir/derrubar a conexão TCP.
+# Os routers usam SQL cru via asyncpg foi substituído pelo driver async do
+# PyMongo (AsyncMongoClient). Em vez de `conn = await get_conn()` / SQL, os
+# routers chamam `db = get_db()` e usam as coleções (db.empresas, db.contatos…).
+# O client mantém seu próprio pool de conexões internamente.
 # ---------------------------------------------------------------------------
 
-_RAW_DSN = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
-
-_pool: asyncpg.Pool | None = None
+_client: Optional[AsyncMongoClient] = None
 
 
-async def init_pool() -> None:
-    """Cria o pool asyncpg (idempotente). Chamado no lifespan do app."""
-    global _pool
-    if _pool is None:
-        _pool = await asyncpg.create_pool(
-            _RAW_DSN,
-            min_size=2,
-            max_size=10,
-            command_timeout=60,
-            max_inactive_connection_lifetime=1800,
-        )
+def _build_client() -> AsyncMongoClient:
+    return AsyncMongoClient(settings.mongo_url, tz_aware=True)
 
 
-async def close_pool() -> None:
-    """Fecha o pool no shutdown do app."""
-    global _pool
-    if _pool is not None:
-        await _pool.close()
-        _pool = None
+def get_db() -> AsyncDatabase:
+    """Retorna o database Mongo (cria o client sob demanda se preciso)."""
+    global _client
+    if _client is None:
+        _client = _build_client()
+    return _client[settings.mongo_db]
 
 
-class _PooledConn:
-    """Wrapper drop-in de uma conexão do pool.
-
-    Proxia todos os métodos do asyncpg (fetch/fetchrow/fetchval/execute/
-    transaction/...) para a conexão real e, no `.close()`, devolve a conexão
-    ao pool em vez de encerrá-la.
-    """
-
-    __slots__ = ("_pool", "_conn")
-
-    def __init__(self, pool: asyncpg.Pool, conn: asyncpg.Connection):
-        self._pool = pool
-        self._conn = conn
-
-    def __getattr__(self, name):
-        # só chega aqui para atributos fora dos __slots__ → delega ao asyncpg
-        return getattr(self._conn, name)
-
-    async def close(self):
-        await self._pool.release(self._conn)
+async def init_db() -> None:
+    """Cria o client e valida a conexão (chamado no lifespan do app)."""
+    global _client
+    if _client is None:
+        _client = _build_client()
+    await _client.admin.command("ping")
 
 
-async def get_conn() -> _PooledConn:
-    """Pega uma conexão do pool (cria o pool sob demanda se preciso)."""
-    if _pool is None:
-        await init_pool()
-    conn = await _pool.acquire()
-    return _PooledConn(_pool, conn)
+async def close_db() -> None:
+    """Fecha o client no shutdown do app."""
+    global _client
+    if _client is not None:
+        await _client.close()
+        _client = None
+
+
+# ---------------------------------------------------------------------------
+# Helpers de documento / consulta
+# ---------------------------------------------------------------------------
+
+def new_id() -> str:
+    """ID de documento (UUID em texto), usado como _id das coleções."""
+    return str(uuid.uuid4())
+
+
+def now() -> datetime:
+    """Timestamp UTC (equivalente ao NOW() do Postgres)."""
+    return datetime.now(timezone.utc)
+
+
+def serialize(doc: Optional[dict]) -> Optional[dict]:
+    """Converte um documento Mongo para um formato amigável à API: renomeia
+    `_id` -> `id`. Mantém os demais campos como estão (datas, listas, dicts)."""
+    if doc is None:
+        return None
+    out = dict(doc)
+    if "_id" in out:
+        out["id"] = out.pop("_id")
+    return out
+
+
+def like(value: str) -> dict:
+    """Equivalente ao `ILIKE '%value%'` do Postgres: regex case-insensitive."""
+    return {"$regex": re.escape(value), "$options": "i"}
+
+
+def ieq(value: str) -> dict:
+    """Igualdade case-insensitive (equivale a `lower(campo) = lower(value)`)."""
+    return {"$regex": f"^{re.escape(value)}$", "$options": "i"}

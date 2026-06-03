@@ -1,10 +1,16 @@
 import json
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional, List
-from datetime import date
-import uuid, asyncio, httpx
-from database import get_conn
+import asyncio, httpx
+from database import get_db, new_id, now, serialize, like, ieq
+from services.auth import require_auth, conta_atual
+from services.atividades import registrar
+
+
+def _autor(user) -> Optional[str]:
+    """Login/e-mail do usuário autenticado (para atribuição de produtividade)."""
+    return (user or {}).get("sub") if isinstance(user, dict) else None
 from services.cnpj_enrichment import (
     calculate_completeness_score,
     clean_cnpj,
@@ -19,86 +25,60 @@ from services.cnpj_enrichment import (
 router = APIRouter()
 
 
-async def log_atividade(conn, empresa_id: uuid.UUID, tipo: str, descricao: str, dados=None):
-    await conn.execute(
-        """INSERT INTO atividades (empresa_id, tipo, descricao, dados)
-           VALUES ($1, $2, $3, $4::jsonb)""",
-        empresa_id,
-        tipo,
-        descricao,
-        json.dumps(dados, ensure_ascii=False) if dados is not None else None,
-    )
+async def log_atividade(db, empresa_id: str, tipo: str, descricao: str, dados=None, autor=None, conta_id=None):
+    await registrar(db, tipo, autor=autor, descricao=descricao, empresa_id=empresa_id, dados=dados, conta_id=conta_id)
 
 
-async def salvar_dados_cnpj(conn, empresa_id: uuid.UUID, data: dict, cnpj_origem: Optional[str] = None):
-    cnpj_valor = clean_cnpj(cnpj_origem or data.get("cnpj") or "")
-    data_abertura = data.get("data_abertura")
-    if isinstance(data_abertura, str) and data_abertura:
-        try:
-            data_abertura = date.fromisoformat(data_abertura)
-        except ValueError:
-            data_abertura = None
+def _coalesce(*vals):
+    """Primeiro valor não-nulo (equivale ao COALESCE do SQL)."""
+    for v in vals:
+        if v is not None:
+            return v
+    return None
+
+
+async def salvar_dados_cnpj(db, empresa_id: str, data: dict, cnpj_origem: Optional[str] = None, conta_id: Optional[str] = None):
+    cnpj_valor = clean_cnpj(cnpj_origem or data.get("cnpj") or "") or None
     cnae_principal = data.get("cnae_principal")
     if cnae_principal is not None:
         cnae_principal = str(cnae_principal)
-    dados_cnpj_json = json.dumps(data, ensure_ascii=False)
-    row = await conn.fetchrow(
-        """UPDATE empresas SET
-           cnpj = COALESCE($2, cnpj),
-           razao_social = COALESCE($3, razao_social, nome),
-           nome_fantasia = COALESCE($4, nome_fantasia),
-           situacao_cadastral = $5,
-           data_abertura = $6::date,
-           natureza_juridica = $7,
-           porte = $8,
-           capital_social = $9,
-           cnaes_principal = $10::varchar,
-           descricao_cnae = $11,
-           logradouro = $12,
-           numero = $13,
-           complemento = $14,
-           bairro = $15,
-           municipio = $16,
-           uf = $17,
-           cep = $18,
-           email = COALESCE($19, email),
-           telefone = COALESCE($20, telefone),
-           telefone2 = COALESCE($21, telefone2),
-           whatsapp = COALESCE($25, whatsapp),
-           dados_cnpj = $22::jsonb,
-           cnpj_fonte = $23,
-           cnpj_enriquecido_em = NOW(),
-           score = $24,
-           updated_at = NOW()
-           WHERE id = $1
-           RETURNING *""",
-        empresa_id,
-        cnpj_valor or None,
-        data.get("razao_social"),
-        data.get("nome_fantasia"),
-        data.get("situacao_cadastral"),
-        data_abertura,
-        data.get("natureza_juridica"),
-        data.get("porte"),
-        data.get("capital_social"),
-        cnae_principal,
-        data.get("cnae_descricao"),
-        data.get("logradouro"),
-        data.get("numero"),
-        data.get("complemento"),
-        data.get("bairro"),
-        data.get("municipio"),
-        data.get("uf"),
-        data.get("cep"),
-        data.get("email"),
-        data.get("telefone"),
-        data.get("telefone2"),
-        dados_cnpj_json,
-        data.get("fonte"),
-        calculate_completeness_score(data),
-        whatsapp_normalizado(data.get("whatsapp")),
+
+    filtro = {"_id": empresa_id}
+    if conta_id is not None:
+        filtro["conta_id"] = conta_id
+    atual = await db.empresas.find_one(filtro) or {}
+    novo = {
+        "cnpj": _coalesce(cnpj_valor, atual.get("cnpj")),
+        "razao_social": _coalesce(data.get("razao_social"), atual.get("razao_social"), atual.get("nome")),
+        "nome_fantasia": _coalesce(data.get("nome_fantasia"), atual.get("nome_fantasia")),
+        "situacao_cadastral": data.get("situacao_cadastral"),
+        "data_abertura": data.get("data_abertura"),
+        "natureza_juridica": data.get("natureza_juridica"),
+        "porte": data.get("porte"),
+        "capital_social": data.get("capital_social"),
+        "cnaes_principal": cnae_principal,
+        "descricao_cnae": data.get("cnae_descricao"),
+        "logradouro": data.get("logradouro"),
+        "numero": data.get("numero"),
+        "complemento": data.get("complemento"),
+        "bairro": data.get("bairro"),
+        "municipio": data.get("municipio"),
+        "uf": data.get("uf"),
+        "cep": data.get("cep"),
+        "email": _coalesce(data.get("email"), atual.get("email")),
+        "telefone": _coalesce(data.get("telefone"), atual.get("telefone")),
+        "telefone2": _coalesce(data.get("telefone2"), atual.get("telefone2")),
+        "whatsapp": _coalesce(whatsapp_normalizado(data.get("whatsapp")), atual.get("whatsapp")),
+        "dados_cnpj": data,
+        "cnpj_fonte": data.get("fonte"),
+        "cnpj_enriquecido_em": now(),
+        "score": calculate_completeness_score(data),
+        "updated_at": now(),
+    }
+    row = await db.empresas.find_one_and_update(
+        filtro, {"$set": novo}, return_document=True
     )
-    return row
+    return serialize(row)
 
 
 def whatsapp_normalizado(valor):
@@ -174,49 +154,45 @@ async def listar_empresas(
     regiao: Optional[str] = None,
     limit: int = Query(50, le=200),
     offset: int = 0,
+    conta_id: str = Depends(conta_atual),
 ):
-    conn = await get_conn()
-    try:
-        where = []
-        params = []
-        i = 1
+    db = get_db()
+    filtro: dict = {"conta_id": conta_id}
+    if tipo:
+        filtro["tipo"] = tipo
+    if busca:
+        filtro["$or"] = [{"nome": like(busca)}, {"cnpj": like(busca)}]
+    if regiao:
+        filtro["regiao"] = like(regiao)
 
-        if tipo:
-            where.append(f"tipo = ${i}")
-            params.append(tipo)
-            i += 1
-        if busca:
-            where.append(f"(nome ILIKE ${i} OR cnpj ILIKE ${i})")
-            params.append(f"%{busca}%")
-            i += 1
-        if regiao:
-            where.append(f"regiao ILIKE ${i}")
-            params.append(f"%{regiao}%")
-            i += 1
+    total = await db.empresas.count_documents(filtro)
+    rows = await (
+        db.empresas.find(filtro)
+        .sort([("score", -1), ("created_at", -1)])
+        .skip(offset)
+        .limit(limit)
+        .to_list(length=limit)
+    )
+    items = [serialize(r) for r in rows]
 
-        where_str = "WHERE " + " AND ".join(where) if where else ""
-        params += [limit, offset]
+    # contagens de conversas/contatos por empresa (substitui os subselects)
+    ids = [i["id"] for i in items]
+    if ids:
+        conv = await (await db.conversas.aggregate([
+            {"$match": {"empresa_id": {"$in": ids}}},
+            {"$group": {"_id": "$empresa_id", "n": {"$sum": 1}}},
+        ])).to_list(length=None)
+        cont = await (await db.contatos.aggregate([
+            {"$match": {"empresa_id": {"$in": ids}}},
+            {"$group": {"_id": "$empresa_id", "n": {"$sum": 1}}},
+        ])).to_list(length=None)
+        conv_map = {c["_id"]: c["n"] for c in conv}
+        cont_map = {c["_id"]: c["n"] for c in cont}
+        for i in items:
+            i["total_conversas"] = conv_map.get(i["id"], 0)
+            i["total_contatos"] = cont_map.get(i["id"], 0)
 
-        rows = await conn.fetch(
-            f"""SELECT e.*, 
-                (SELECT COUNT(*) FROM conversas c WHERE c.empresa_id = e.id) as total_conversas,
-                (SELECT COUNT(*) FROM contatos ct WHERE ct.empresa_id = e.id) as total_contatos
-                FROM empresas e {where_str}
-                ORDER BY e.score DESC, e.created_at DESC
-                LIMIT ${i} OFFSET ${i+1}""",
-            *params,
-        )
-        total = await conn.fetchval(
-            f"SELECT COUNT(*) FROM empresas {where_str}", *params[:-2]
-        )
-        return {
-            "total": total,
-            "items": [dict(r) for r in rows],
-            "limit": limit,
-            "offset": offset,
-        }
-    finally:
-        await conn.close()
+    return {"total": total, "items": items, "limit": limit, "offset": offset}
 
 
 NOMINATIM = "https://nominatim.openstreetmap.org/search"
@@ -245,240 +221,230 @@ def _queries_geocode(r: dict) -> list:
 
 
 @router.get("/geo")
-async def empresas_geo():
+async def empresas_geo(conta_id: str = Depends(conta_atual)):
     """Empresas com coordenadas + status, para o Mapa de Ativos."""
-    conn = await get_conn()
-    try:
-        rows = await conn.fetch(
-            """SELECT id, nome, status_prospeccao, lat, lng, bairro, municipio, uf,
-                      logradouro, numero, telefone, whatsapp
-               FROM empresas ORDER BY nome"""
-        )
-        itens = [dict(r) for r in rows]
-        sem = sum(1 for i in itens if not (i.get("lat") and i.get("lng")))
-        return {
-            "total": len(itens),
-            "com_coords": len(itens) - sem,
-            "sem_coords": sem,
-            "empresas": itens,
-        }
-    finally:
-        await conn.close()
+    db = get_db()
+    proj = {
+        "nome": 1, "status_prospeccao": 1, "lat": 1, "lng": 1, "bairro": 1,
+        "municipio": 1, "uf": 1, "logradouro": 1, "numero": 1, "telefone": 1, "whatsapp": 1,
+    }
+    rows = await db.empresas.find({"conta_id": conta_id}, proj).sort("nome", 1).to_list(length=None)
+    itens = [serialize(r) for r in rows]
+    sem = sum(1 for i in itens if not (i.get("lat") and i.get("lng")))
+    return {
+        "total": len(itens),
+        "com_coords": len(itens) - sem,
+        "sem_coords": sem,
+        "empresas": itens,
+    }
 
 
 @router.post("/geocodificar")
-async def geocodificar_empresas(limite: int = 80):
+async def geocodificar_empresas(limite: int = 80, conta_id: str = Depends(conta_atual)):
     """Geocodifica (OSM/Nominatim) as empresas sem coordenadas. Respeita 1 req/s."""
-    conn = await get_conn()
-    try:
-        rows = await conn.fetch(
-            """SELECT id, logradouro, numero, bairro, regiao, municipio, uf FROM empresas
-               WHERE (lat IS NULL OR lng IS NULL)
-                 AND (logradouro IS NOT NULL OR bairro IS NOT NULL OR regiao IS NOT NULL OR municipio IS NOT NULL)
-               LIMIT $1""",
-            limite,
-        )
-        geocodificadas = 0
-        headers = {"User-Agent": "ImobPro/1.0 (contato@complexodmc.com.br)"}
-        async with httpx.AsyncClient(timeout=20, headers=headers) as client:
-            for r in rows:
-                queries = _queries_geocode(dict(r))
-                achou = None
-                for q in queries:
-                    try:
-                        resp = await client.get(
-                            NOMINATIM,
-                            params={"format": "json", "limit": 1, "countrycodes": "br", "q": q},
-                        )
-                        data = resp.json() if resp.status_code == 200 else []
-                    except Exception:
-                        data = []
-                    await asyncio.sleep(1.1)  # política de uso do Nominatim (1 req/s)
-                    if data:
-                        achou = data[0]
-                        break
-                if achou:
-                    await conn.execute(
-                        "UPDATE empresas SET lat=$1, lng=$2 WHERE id=$3",
-                        float(achou["lat"]), float(achou["lon"]), r["id"],
+    db = get_db()
+    filtro = {
+        "conta_id": conta_id,
+        "$or": [{"lat": None}, {"lng": None}],
+        "$and": [{"$or": [
+            {"logradouro": {"$nin": [None, ""]}},
+            {"bairro": {"$nin": [None, ""]}},
+            {"regiao": {"$nin": [None, ""]}},
+            {"municipio": {"$nin": [None, ""]}},
+        ]}],
+    }
+    rows = await db.empresas.find(
+        filtro, {"logradouro": 1, "numero": 1, "bairro": 1, "regiao": 1, "municipio": 1, "uf": 1}
+    ).limit(limite).to_list(length=limite)
+
+    geocodificadas = 0
+    headers = {"User-Agent": "ImobPro/1.0 (contato@complexodmc.com.br)"}
+    async with httpx.AsyncClient(timeout=20, headers=headers) as client:
+        for r in rows:
+            queries = _queries_geocode(serialize(r))
+            achou = None
+            for q in queries:
+                try:
+                    resp = await client.get(
+                        NOMINATIM,
+                        params={"format": "json", "limit": 1, "countrycodes": "br", "q": q},
                     )
-                    geocodificadas += 1
-        restantes = await conn.fetchval(
-            "SELECT COUNT(*) FROM empresas WHERE lat IS NULL OR lng IS NULL"
-        )
-        return {"ok": True, "geocodificadas": geocodificadas, "restantes": int(restantes)}
-    finally:
-        await conn.close()
+                    data = resp.json() if resp.status_code == 200 else []
+                except Exception:
+                    data = []
+                await asyncio.sleep(1.1)  # política de uso do Nominatim (1 req/s)
+                if data:
+                    achou = data[0]
+                    break
+            if achou:
+                await db.empresas.update_one(
+                    {"_id": r["_id"], "conta_id": conta_id},
+                    {"$set": {"lat": float(achou["lat"]), "lng": float(achou["lon"])}},
+                )
+                geocodificadas += 1
+    restantes = await db.empresas.count_documents({"conta_id": conta_id, "$or": [{"lat": None}, {"lng": None}]})
+    return {"ok": True, "geocodificadas": geocodificadas, "restantes": int(restantes)}
 
 
 @router.get("/{empresa_id}")
-async def obter_empresa(empresa_id: str):
-    conn = await get_conn()
-    try:
-        row = await conn.fetchrow(
-            "SELECT * FROM empresas WHERE id = $1", uuid.UUID(empresa_id)
-        )
-        if not row:
-            raise HTTPException(status_code=404, detail="Empresa não encontrada")
+async def obter_empresa(empresa_id: str, conta_id: str = Depends(conta_atual)):
+    db = get_db()
+    row = await db.empresas.find_one({"_id": empresa_id, "conta_id": conta_id})
+    if not row:
+        raise HTTPException(status_code=404, detail="Empresa não encontrada")
 
-        contatos = await conn.fetch(
-            "SELECT * FROM contatos WHERE empresa_id = $1 ORDER BY nome", uuid.UUID(empresa_id)
-        )
-        conversas = await conn.fetch(
-            """SELECT cv.*, 
-               (SELECT COUNT(*) FROM mensagens m WHERE m.conversa_id = cv.id) as total_mensagens
-               FROM conversas cv WHERE cv.empresa_id = $1 ORDER BY cv.ultimo_contato DESC NULLS LAST""",
-            uuid.UUID(empresa_id),
-        )
-        atividades = await conn.fetch(
-            "SELECT * FROM atividades WHERE empresa_id = $1 ORDER BY created_at DESC LIMIT 20",
-            uuid.UUID(empresa_id),
-        )
-        return {
-            **dict(row),
-            "contatos": [dict(c) for c in contatos],
-            "conversas": [dict(c) for c in conversas],
-            "atividades": [dict(a) for a in atividades],
-        }
-    finally:
-        await conn.close()
+    contatos = await db.contatos.find({"empresa_id": empresa_id}).sort("nome", 1).to_list(length=None)
+    conversas = await db.conversas.find({"empresa_id": empresa_id}).sort("ultimo_contato", -1).to_list(length=None)
+    atividades = await db.atividades.find({"empresa_id": empresa_id}).sort("created_at", -1).limit(20).to_list(length=20)
+
+    conversas_out = []
+    for cv in conversas:
+        cv = serialize(cv)
+        cv["total_mensagens"] = await db.mensagens.count_documents({"conversa_id": cv["id"]})
+        conversas_out.append(cv)
+
+    return {
+        **serialize(row),
+        "contatos": [serialize(c) for c in contatos],
+        "conversas": conversas_out,
+        "atividades": [serialize(a) for a in atividades],
+    }
 
 
 @router.post("")
-async def criar_empresa(empresa: EmpresaCreate):
-    conn = await get_conn()
-    try:
-        row = await conn.fetchrow(
-            """INSERT INTO empresas (nome, cnpj, tipo, regiao, bairro, municipio, uf,
-               email, telefone, whatsapp, website, observacoes, tags)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-               RETURNING *""",
-            empresa.nome, empresa.cnpj, empresa.tipo, empresa.regiao,
-            empresa.bairro, empresa.municipio, empresa.uf, empresa.email,
-            empresa.telefone, empresa.whatsapp, empresa.website,
-            empresa.observacoes, empresa.tags,
-        )
-        return dict(row)
-    finally:
-        await conn.close()
+async def criar_empresa(empresa: EmpresaCreate, user=Depends(require_auth), conta_id: str = Depends(conta_atual)):
+    db = get_db()
+    doc = {
+        "_id": new_id(), "conta_id": conta_id,
+        "nome": empresa.nome, "cnpj": empresa.cnpj, "tipo": empresa.tipo,
+        "regiao": empresa.regiao, "bairro": empresa.bairro, "municipio": empresa.municipio,
+        "uf": empresa.uf, "email": empresa.email, "telefone": empresa.telefone,
+        "whatsapp": empresa.whatsapp, "website": empresa.website,
+        "observacoes": empresa.observacoes, "tags": empresa.tags or [],
+        "score": 0, "status_prospeccao": "nao_iniciado", "prioridade": "normal",
+        "created_at": now(), "updated_at": now(),
+    }
+    await db.empresas.insert_one(doc)
+    await log_atividade(db, doc["_id"], "empresa_criada",
+                        f"Empresa \"{empresa.nome}\" cadastrada", autor=_autor(user), conta_id=conta_id)
+    return serialize(doc)
 
 
 @router.patch("/{empresa_id}")
-async def atualizar_empresa(empresa_id: str, dados: EmpresaUpdate):
-    conn = await get_conn()
-    try:
-        campos = {k: v for k, v in dados.model_dump().items() if v is not None}
-        if not campos:
-            raise HTTPException(status_code=400, detail="Nenhum campo para atualizar")
+async def atualizar_empresa(empresa_id: str, dados: EmpresaUpdate, user=Depends(require_auth), conta_id: str = Depends(conta_atual)):
+    db = get_db()
+    campos = {k: v for k, v in dados.model_dump().items() if v is not None}
+    if not campos:
+        raise HTTPException(status_code=400, detail="Nenhum campo para atualizar")
+    campos["updated_at"] = now()
 
-        casts = {"data_agendada": "::timestamp", "data_abertura": "::date"}
-        sets = ", ".join([f"{k} = ${i+2}{casts.get(k, '')}" for i, k in enumerate(campos)])
-        valores = list(campos.values())
+    anterior = await db.empresas.find_one({"_id": empresa_id, "conta_id": conta_id}, {"status_prospeccao": 1})
+    row = await db.empresas.find_one_and_update(
+        {"_id": empresa_id, "conta_id": conta_id}, {"$set": campos}, return_document=True
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Empresa não encontrada")
 
-        row = await conn.fetchrow(
-            f"UPDATE empresas SET {sets}, updated_at = NOW() WHERE id = $1 RETURNING *",
-            uuid.UUID(empresa_id), *valores,
+    # Mudança de status de prospecção é um evento de produtividade real.
+    novo_status = campos.get("status_prospeccao")
+    if novo_status and anterior and novo_status != anterior.get("status_prospeccao"):
+        await log_atividade(
+            db, empresa_id, "status_alterado",
+            f"Status de \"{row.get('nome','')}\" → {novo_status}",
+            dados={"de": anterior.get("status_prospeccao"), "para": novo_status},
+            autor=_autor(user), conta_id=conta_id,
         )
-        if not row:
-            raise HTTPException(status_code=404, detail="Empresa não encontrada")
-        return dict(row)
-    finally:
-        await conn.close()
+    return serialize(row)
 
 
 @router.delete("/{empresa_id}")
-async def deletar_empresa(empresa_id: str):
-    conn = await get_conn()
-    try:
-        await conn.execute("DELETE FROM empresas WHERE id = $1", uuid.UUID(empresa_id))
-        return {"ok": True}
-    finally:
-        await conn.close()
+async def deletar_empresa(empresa_id: str, conta_id: str = Depends(conta_atual)):
+    db = get_db()
+    # garante que a empresa é desta conta antes de remover dependentes
+    if not await db.empresas.find_one({"_id": empresa_id, "conta_id": conta_id}, {"_id": 1}):
+        raise HTTPException(status_code=404, detail="Empresa não encontrada")
+    # cascata (no Postgres era via FK): remove dependentes e desvincula o mercado
+    conversa_ids = [c["_id"] for c in await db.conversas.find(
+        {"empresa_id": empresa_id}, {"_id": 1}
+    ).to_list(length=None)]
+    if conversa_ids:
+        await db.mensagens.delete_many({"conversa_id": {"$in": conversa_ids}})
+    await db.conversas.delete_many({"empresa_id": empresa_id})
+    await db.contatos.delete_many({"empresa_id": empresa_id})
+    await db.atividades.delete_many({"empresa_id": empresa_id})
+    await db.campanha_itens.delete_many({"empresa_id": empresa_id})
+    await db.mercado_itens.update_many({"empresa_id": empresa_id}, {"$set": {"empresa_id": None}})
+    await db.empresas.delete_one({"_id": empresa_id, "conta_id": conta_id})
+    return {"ok": True}
 
 
 @router.post("/{empresa_id}/enrich-cnpj")
-async def enriquecer_com_cnpj(empresa_id: str):
+async def enriquecer_com_cnpj(empresa_id: str, user=Depends(require_auth), conta_id: str = Depends(conta_atual)):
     """Busca dados da Receita Federal e atualiza a empresa"""
-    conn = await get_conn()
-    try:
-        empresa = await conn.fetchrow(
-            "SELECT cnpj, nome, website FROM empresas WHERE id = $1", uuid.UUID(empresa_id)
-        )
-        if not empresa or not empresa["cnpj"]:
-            raise HTTPException(status_code=400, detail="Empresa sem CNPJ cadastrado")
+    db = get_db()
+    empresa = await db.empresas.find_one({"_id": empresa_id, "conta_id": conta_id}, {"cnpj": 1, "nome": 1, "website": 1})
+    if not empresa or not empresa.get("cnpj"):
+        raise HTTPException(status_code=400, detail="Empresa sem CNPJ cadastrado")
 
-        data = await fetch_cnpj_data(empresa["cnpj"])
-        # Se a Receita nao trouxe um celular, tenta achar o WhatsApp no site da empresa
-        if not data.get("whatsapp"):
-            try:
-                achado = await descobrir_whatsapp(empresa["nome"], empresa["website"])
-                if achado and achado.get("whatsapp"):
-                    data["whatsapp"] = achado["whatsapp"]
-                    data["fonte_whatsapp"] = achado.get("fonte_whatsapp")
-            except Exception:
-                pass
-        row = await salvar_dados_cnpj(conn, uuid.UUID(empresa_id), data, empresa["cnpj"])
-        await log_atividade(
-            conn,
-            uuid.UUID(empresa_id),
-            "enrich_cnpj",
-            "Dados enriquecidos via Receita Federal",
-            {"fonte": data.get("fonte"), "cnpj": data.get("cnpj")},
-        )
+    data = await fetch_cnpj_data(empresa["cnpj"])
+    # Se a Receita nao trouxe um celular, tenta achar o WhatsApp no site da empresa
+    if not data.get("whatsapp"):
+        try:
+            achado = await descobrir_whatsapp(empresa["nome"], empresa.get("website"))
+            if achado and achado.get("whatsapp"):
+                data["whatsapp"] = achado["whatsapp"]
+                data["fonte_whatsapp"] = achado.get("fonte_whatsapp")
+        except Exception:
+            pass
+    row = await salvar_dados_cnpj(db, empresa_id, data, empresa["cnpj"], conta_id=conta_id)
+    await log_atividade(
+        db, empresa_id, "enrich_cnpj",
+        "Dados enriquecidos via Receita Federal",
+        {"fonte": data.get("fonte"), "cnpj": data.get("cnpj")},
+        autor=_autor(user), conta_id=conta_id,
+    )
 
-        return {
-            "ok": True,
-            "empresa": dict(row),
-            "qsa": data.get("qsa", []),
-            "fonte": data.get("fonte"),
-        }
-    finally:
-        await conn.close()
+    return {
+        "ok": True,
+        "empresa": row,
+        "qsa": data.get("qsa", []),
+        "fonte": data.get("fonte"),
+    }
 
 
 @router.post("/{empresa_id}/discover-whatsapp")
-async def descobrir_whatsapp_empresa(empresa_id: str):
+async def descobrir_whatsapp_empresa(empresa_id: str, user=Depends(require_auth), conta_id: str = Depends(conta_atual)):
     """Procura o WhatsApp da empresa no site e salva o numero encontrado."""
-    conn = await get_conn()
-    try:
-        empresa = await conn.fetchrow(
-            "SELECT id, nome, website, whatsapp FROM empresas WHERE id = $1",
-            uuid.UUID(empresa_id),
-        )
-        if not empresa:
-            raise HTTPException(status_code=404, detail="Empresa não encontrada")
+    db = get_db()
+    empresa = await db.empresas.find_one({"_id": empresa_id, "conta_id": conta_id}, {"nome": 1, "website": 1, "whatsapp": 1})
+    if not empresa:
+        raise HTTPException(status_code=404, detail="Empresa não encontrada")
 
-        achado = await descobrir_whatsapp(empresa["nome"], empresa["website"])
-        if not achado or not achado.get("whatsapp"):
-            raise HTTPException(status_code=404, detail="Não foi possível descobrir um WhatsApp válido para esta empresa")
+    achado = await descobrir_whatsapp(empresa["nome"], empresa.get("website"))
+    if not achado or not achado.get("whatsapp"):
+        raise HTTPException(status_code=404, detail="Não foi possível descobrir um WhatsApp válido para esta empresa")
 
-        whatsapp = whatsapp_normalizado(achado.get("whatsapp"))
-        row = await conn.fetchrow(
-            """UPDATE empresas SET
-               whatsapp = COALESCE($2, whatsapp),
-               updated_at = NOW()
-               WHERE id = $1
-               RETURNING *""",
-            uuid.UUID(empresa_id),
-            whatsapp,
-        )
+    whatsapp = whatsapp_normalizado(achado.get("whatsapp"))
+    update = {"updated_at": now()}
+    if whatsapp:
+        update["whatsapp"] = whatsapp
+    row = await db.empresas.find_one_and_update(
+        {"_id": empresa_id, "conta_id": conta_id}, {"$set": update}, return_document=True
+    )
 
-        await log_atividade(
-            conn,
-            uuid.UUID(empresa_id),
-            "discover_whatsapp",
-            "WhatsApp descoberto no site da empresa",
-            {"whatsapp": whatsapp, "fonte_whatsapp": achado.get("fonte_whatsapp")},
-        )
+    await log_atividade(
+        db, empresa_id, "discover_whatsapp",
+        "WhatsApp descoberto no site da empresa",
+        {"whatsapp": whatsapp, "fonte_whatsapp": achado.get("fonte_whatsapp")},
+        autor=_autor(user), conta_id=conta_id,
+    )
 
-        return {
-            "ok": True,
-            "empresa": dict(row),
-            "whatsapp": whatsapp,
-            "fonte_whatsapp": achado.get("fonte_whatsapp"),
-        }
-    finally:
-        await conn.close()
+    return {
+        "ok": True,
+        "empresa": serialize(row),
+        "whatsapp": whatsapp,
+        "fonte_whatsapp": achado.get("fonte_whatsapp"),
+    }
 
 
 class WhatsappBatchRequest(BaseModel):
@@ -489,65 +455,64 @@ class WhatsappBatchRequest(BaseModel):
 
 
 @router.post("/discover-whatsapp-all")
-async def descobrir_whatsapp_todas(body: WhatsappBatchRequest):
+async def descobrir_whatsapp_todas(body: WhatsappBatchRequest, user=Depends(require_auth), conta_id: str = Depends(conta_atual)):
     """Pente fino: tenta descobrir o WhatsApp de todas as empresas (em paralelo,
     com limite de concorrência e de tempo por empresa). Salva os encontrados."""
-    conn = await get_conn()
-    try:
-        where = "WHERE (whatsapp IS NULL OR whatsapp = '')" if body.only_missing else ""
-        rows = await conn.fetch(
-            f"""SELECT id, nome, website, whatsapp FROM empresas
-                {where} ORDER BY score DESC, created_at DESC"""
-        )
-        if body.limit is not None:
-            rows = rows[: body.limit]
+    db = get_db()
+    filtro = {"conta_id": conta_id}
+    if body.only_missing:
+        filtro["$or"] = [{"whatsapp": None}, {"whatsapp": ""}]
+    cursor = db.empresas.find(filtro, {"nome": 1, "website": 1, "whatsapp": 1}).sort(
+        [("score", -1), ("created_at", -1)]
+    )
+    rows = await cursor.to_list(length=None)
+    if body.limit is not None:
+        rows = rows[: body.limit]
 
-        sem = asyncio.Semaphore(max(1, min(body.concurrency, 10)))
+    sem = asyncio.Semaphore(max(1, min(body.concurrency, 10)))
 
-        async def processa(r):
-            async with sem:
-                try:
-                    achado = await descobrir_whatsapp(
-                        r["nome"], r["website"], deadline_s=body.deadline_s
-                    )
-                except Exception as exc:
-                    return {"id": str(r["id"]), "nome": r["nome"], "status": "error", "error": str(exc)}
-                if achado and achado.get("whatsapp"):
-                    return {
-                        "id": str(r["id"]), "nome": r["nome"], "status": "ok",
-                        "whatsapp": whatsapp_normalizado(achado["whatsapp"]),
-                        "fonte_whatsapp": achado.get("fonte_whatsapp"),
-                    }
-                return {"id": str(r["id"]), "nome": r["nome"], "status": "nao_encontrado"}
-
-        achados = await asyncio.gather(*[processa(r) for r in rows])
-
-        encontrados = 0
-        items = []
-        for a in achados:
-            if a["status"] == "ok" and a.get("whatsapp"):
-                await conn.execute(
-                    "UPDATE empresas SET whatsapp = $2, updated_at = NOW() WHERE id = $1",
-                    uuid.UUID(a["id"]), a["whatsapp"],
+    async def processa(r):
+        async with sem:
+            try:
+                achado = await descobrir_whatsapp(
+                    r["nome"], r.get("website"), deadline_s=body.deadline_s
                 )
-                await log_atividade(
-                    conn, uuid.UUID(a["id"]), "discover_whatsapp",
-                    "WhatsApp descoberto em lote (pente fino)",
-                    {"whatsapp": a["whatsapp"], "fonte_whatsapp": a.get("fonte_whatsapp")},
-                )
-                encontrados += 1
-            items.append(a)
+            except Exception as exc:
+                return {"id": r["_id"], "nome": r["nome"], "status": "error", "error": str(exc)}
+            if achado and achado.get("whatsapp"):
+                return {
+                    "id": r["_id"], "nome": r["nome"], "status": "ok",
+                    "whatsapp": whatsapp_normalizado(achado["whatsapp"]),
+                    "fonte_whatsapp": achado.get("fonte_whatsapp"),
+                }
+            return {"id": r["_id"], "nome": r["nome"], "status": "nao_encontrado"}
 
-        return {
-            "ok": True,
-            "total": len(rows),
-            "encontrados": encontrados,
-            "nao_encontrados": sum(1 for a in achados if a["status"] == "nao_encontrado"),
-            "erros": sum(1 for a in achados if a["status"] == "error"),
-            "items": items,
-        }
-    finally:
-        await conn.close()
+    achados = await asyncio.gather(*[processa(r) for r in rows])
+
+    encontrados = 0
+    items = []
+    for a in achados:
+        if a["status"] == "ok" and a.get("whatsapp"):
+            await db.empresas.update_one(
+                {"_id": a["id"], "conta_id": conta_id}, {"$set": {"whatsapp": a["whatsapp"], "updated_at": now()}}
+            )
+            await log_atividade(
+                db, a["id"], "discover_whatsapp",
+                "WhatsApp descoberto em lote (pente fino)",
+                {"whatsapp": a["whatsapp"], "fonte_whatsapp": a.get("fonte_whatsapp")},
+                autor=_autor(user), conta_id=conta_id,
+            )
+            encontrados += 1
+        items.append({**a, "id": str(a["id"])})
+
+    return {
+        "ok": True,
+        "total": len(rows),
+        "encontrados": encontrados,
+        "nao_encontrados": sum(1 for a in achados if a["status"] == "nao_encontrado"),
+        "erros": sum(1 for a in achados if a["status"] == "error"),
+        "items": items,
+    }
 
 
 # ---- Descoberta de e-mails (empresa + donos) ----
@@ -578,88 +543,78 @@ def _socio_nome_qual(s: dict):
     return nome, qual
 
 
-async def _upsert_contato_dono(conn, empresa_id: uuid.UUID, nome: str, cargo: str, email: str) -> bool:
-    """Salva/atualiza o e-mail do dono na tabela contatos. Retorna True se gravou."""
+async def _upsert_contato_dono(db, empresa_id: str, nome: str, cargo: str, email: str, conta_id: Optional[str] = None) -> bool:
+    """Salva/atualiza o e-mail do dono na coleção contatos. Retorna True se gravou."""
     if not nome or not email:
         return False
-    existente = await conn.fetchrow(
-        "SELECT id, email FROM contatos WHERE empresa_id = $1 AND lower(nome) = lower($2) LIMIT 1",
-        empresa_id, nome,
-    )
+    existente = await db.contatos.find_one({"empresa_id": empresa_id, "nome": ieq(nome)})
     if existente:
-        if (existente["email"] or "").lower() == email.lower():
+        if (existente.get("email") or "").lower() == email.lower():
             return False
-        await conn.execute(
-            "UPDATE contatos SET email = COALESCE(NULLIF(email, ''), $2) WHERE id = $1",
-            existente["id"], email,
-        )
+        if not existente.get("email"):
+            await db.contatos.update_one({"_id": existente["_id"]}, {"$set": {"email": email}})
         return True
-    await conn.execute(
-        """INSERT INTO contatos (empresa_id, nome, cargo, email)
-           VALUES ($1, $2, $3, $4)""",
-        empresa_id, nome, cargo, email,
-    )
+    await db.contatos.insert_one({
+        "_id": new_id(), "conta_id": conta_id, "empresa_id": empresa_id, "nome": nome,
+        "cargo": cargo, "email": email, "created_at": now(),
+    })
     return True
 
 
-async def _descobrir_emails_empresa(conn, row, deadline_s: float = 18.0) -> dict:
+async def _descobrir_emails_empresa(db, row, deadline_s: float = 18.0, conta_id: Optional[str] = None) -> dict:
     """Descobre e-mails da empresa e dos donos (QSA) e salva. row precisa ter
     id, nome, website, email, dados_cnpj."""
-    res = await descobrir_emails(row["nome"], row["website"], deadline_s=deadline_s)
+    res = await descobrir_emails(row["nome"], row.get("website"), deadline_s=deadline_s)
     emails = res.get("emails") or []
     if not emails:
         return {"emails": [], "email_empresa": None, "donos": []}
 
-    dominio = _dominio_site(row["website"])
+    dominio = _dominio_site(row.get("website"))
     email_empresa = melhor_email_empresa(emails, dominio)
 
     # salva o e-mail da empresa só se ainda não houver um
-    if email_empresa:
-        await conn.execute(
-            "UPDATE empresas SET email = COALESCE(NULLIF(email, ''), $2), updated_at = NOW() WHERE id = $1",
-            row["id"], email_empresa,
+    if email_empresa and not row.get("email"):
+        await db.empresas.update_one(
+            {"_id": row["id"], "conta_id": conta_id}, {"$set": {"email": email_empresa, "updated_at": now()}}
         )
 
     # casa e-mails com os donos do QSA e salva como contato
     donos = []
-    for s in _qsa_de(row["dados_cnpj"]):
+    for s in _qsa_de(row.get("dados_cnpj")):
         nome, qual = _socio_nome_qual(s)
         if not nome:
             continue
         em = casar_email_dono(nome, emails)
         if em:
-            await _upsert_contato_dono(conn, row["id"], nome, qual, em)
+            await _upsert_contato_dono(db, row["id"], nome, qual, em, conta_id=conta_id)
             donos.append({"nome": nome, "qualificacao": qual, "email": em})
 
     return {"emails": emails, "email_empresa": email_empresa, "donos": donos}
 
 
 @router.post("/{empresa_id}/discover-email")
-async def descobrir_email_empresa(empresa_id: str):
+async def descobrir_email_empresa(empresa_id: str, user=Depends(require_auth), conta_id: str = Depends(conta_atual)):
     """Procura no site os e-mails da empresa e dos donos (QSA) e salva."""
-    conn = await get_conn()
-    try:
-        row = await conn.fetchrow(
-            "SELECT id, nome, website, email, dados_cnpj FROM empresas WHERE id = $1",
-            uuid.UUID(empresa_id),
-        )
-        if not row:
-            raise HTTPException(status_code=404, detail="Empresa não encontrada")
+    db = get_db()
+    row = await db.empresas.find_one(
+        {"_id": empresa_id, "conta_id": conta_id}, {"nome": 1, "website": 1, "email": 1, "dados_cnpj": 1}
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Empresa não encontrada")
 
-        resultado = await _descobrir_emails_empresa(conn, row, deadline_s=22.0)
-        if not resultado["emails"]:
-            raise HTTPException(status_code=404, detail="Nenhum e-mail encontrado para esta empresa")
+    resultado = await _descobrir_emails_empresa(db, serialize(row), deadline_s=22.0, conta_id=conta_id)
+    if not resultado["emails"]:
+        raise HTTPException(status_code=404, detail="Nenhum e-mail encontrado para esta empresa")
 
-        await log_atividade(
-            conn, uuid.UUID(empresa_id), "discover_email",
-            "E-mails descobertos no site da empresa",
-            {"email_empresa": resultado["email_empresa"],
-             "donos": resultado["donos"], "total": len(resultado["emails"])},
-        )
-        empresa = await conn.fetchrow("SELECT * FROM empresas WHERE id = $1", uuid.UUID(empresa_id))
-        return {"ok": True, "empresa": dict(empresa), **resultado}
-    finally:
-        await conn.close()
+    await log_atividade(
+        db, empresa_id, "discover_email",
+        "E-mails descobertos no site da empresa",
+        {"email_empresa": resultado["email_empresa"],
+         "donos": resultado["donos"], "total": len(resultado["emails"])},
+        autor=_autor(user), conta_id=conta_id,
+    )
+    empresa = await db.empresas.find_one({"_id": empresa_id, "conta_id": conta_id})
+    return {"ok": True, "empresa": serialize(empresa), **resultado}
 
 
 class EmailBatchRequest(BaseModel):
@@ -670,257 +625,218 @@ class EmailBatchRequest(BaseModel):
 
 
 @router.post("/discover-email-all")
-async def descobrir_email_todas(body: EmailBatchRequest):
+async def descobrir_email_todas(body: EmailBatchRequest, user=Depends(require_auth), conta_id: str = Depends(conta_atual)):
     """Pente fino: descobre e-mails (empresa + donos) de todas as empresas."""
-    conn = await get_conn()
-    try:
-        where = "WHERE (email IS NULL OR email = '')" if body.only_missing else ""
-        rows = await conn.fetch(
-            f"""SELECT id, nome, website, email, dados_cnpj FROM empresas
-                {where} ORDER BY score DESC, created_at DESC"""
-        )
-        if body.limit is not None:
-            rows = rows[: body.limit]
+    db = get_db()
+    filtro = {"conta_id": conta_id}
+    if body.only_missing:
+        filtro["$or"] = [{"email": None}, {"email": ""}]
+    rows = await db.empresas.find(
+        filtro, {"nome": 1, "website": 1, "email": 1, "dados_cnpj": 1}
+    ).sort([("score", -1), ("created_at", -1)]).to_list(length=None)
+    if body.limit is not None:
+        rows = rows[: body.limit]
 
-        sem = asyncio.Semaphore(max(1, min(body.concurrency, 10)))
+    sem = asyncio.Semaphore(max(1, min(body.concurrency, 10)))
 
-        async def processa(r):
-            async with sem:
-                try:
-                    res = await descobrir_emails(r["nome"], r["website"], deadline_s=body.deadline_s)
-                except Exception as exc:
-                    return {"id": r["id"], "nome": r["nome"], "status": "error", "error": str(exc)}
-                emails = res.get("emails") or []
-                if not emails:
-                    return {"id": r["id"], "nome": r["nome"], "status": "nao_encontrado"}
-                dominio = _dominio_site(r["website"])
-                return {
-                    "id": r["id"], "nome": r["nome"], "status": "ok",
-                    "email_empresa": melhor_email_empresa(emails, dominio),
-                    "emails": emails, "dados_cnpj": r["dados_cnpj"],
-                }
+    async def processa(r):
+        async with sem:
+            try:
+                res = await descobrir_emails(r["nome"], r.get("website"), deadline_s=body.deadline_s)
+            except Exception as exc:
+                return {"id": r["_id"], "nome": r["nome"], "status": "error", "error": str(exc)}
+            emails = res.get("emails") or []
+            if not emails:
+                return {"id": r["_id"], "nome": r["nome"], "status": "nao_encontrado"}
+            dominio = _dominio_site(r.get("website"))
+            return {
+                "id": r["_id"], "nome": r["nome"], "status": "ok",
+                "email_empresa": melhor_email_empresa(emails, dominio),
+                "emails": emails, "dados_cnpj": r.get("dados_cnpj"),
+            }
 
-        achados = await asyncio.gather(*[processa(r) for r in rows])
+    achados = await asyncio.gather(*[processa(r) for r in rows])
 
-        empresas_ok = donos_ok = 0
-        items = []
-        for a in achados:
-            if a["status"] == "ok":
-                eid = a["id"]
-                if a.get("email_empresa"):
-                    await conn.execute(
-                        "UPDATE empresas SET email = COALESCE(NULLIF(email, ''), $2), updated_at = NOW() WHERE id = $1",
-                        eid, a["email_empresa"],
-                    )
-                    empresas_ok += 1
-                donos = []
-                for s in _qsa_de(a.get("dados_cnpj")):
-                    nome, qual = _socio_nome_qual(s)
-                    if not nome:
-                        continue
-                    em = casar_email_dono(nome, a["emails"])
-                    if em and await _upsert_contato_dono(conn, eid, nome, qual, em):
-                        donos.append({"nome": nome, "email": em})
-                        donos_ok += 1
-                await log_atividade(
-                    conn, eid, "discover_email", "E-mails descobertos em lote",
-                    {"email_empresa": a.get("email_empresa"), "donos": donos},
+    empresas_ok = donos_ok = 0
+    items = []
+    for a in achados:
+        if a["status"] == "ok":
+            eid = a["id"]
+            if a.get("email_empresa"):
+                await db.empresas.update_one(
+                    {"_id": eid, "conta_id": conta_id, "$or": [{"email": None}, {"email": ""}]},
+                    {"$set": {"email": a["email_empresa"], "updated_at": now()}},
                 )
-                items.append({"id": str(eid), "nome": a["nome"], "status": "ok",
-                              "email_empresa": a.get("email_empresa"), "donos": donos})
-            else:
-                items.append({"id": str(a["id"]), "nome": a["nome"], "status": a["status"]})
+                empresas_ok += 1
+            donos = []
+            for s in _qsa_de(a.get("dados_cnpj")):
+                nome, qual = _socio_nome_qual(s)
+                if not nome:
+                    continue
+                em = casar_email_dono(nome, a["emails"])
+                if em and await _upsert_contato_dono(db, eid, nome, qual, em, conta_id=conta_id):
+                    donos.append({"nome": nome, "email": em})
+                    donos_ok += 1
+            await log_atividade(
+                db, eid, "discover_email", "E-mails descobertos em lote",
+                {"email_empresa": a.get("email_empresa"), "donos": donos},
+                autor=_autor(user), conta_id=conta_id,
+            )
+            items.append({"id": str(eid), "nome": a["nome"], "status": "ok",
+                          "email_empresa": a.get("email_empresa"), "donos": donos})
+        else:
+            items.append({"id": str(a["id"]), "nome": a["nome"], "status": a["status"]})
 
-        return {
-            "ok": True,
-            "total": len(rows),
-            "emails_empresa": empresas_ok,
-            "emails_donos": donos_ok,
-            "nao_encontrados": sum(1 for a in achados if a["status"] == "nao_encontrado"),
-            "erros": sum(1 for a in achados if a["status"] == "error"),
-            "items": items,
-        }
-    finally:
-        await conn.close()
+    return {
+        "ok": True,
+        "total": len(rows),
+        "emails_empresa": empresas_ok,
+        "emails_donos": donos_ok,
+        "nao_encontrados": sum(1 for a in achados if a["status"] == "nao_encontrado"),
+        "erros": sum(1 for a in achados if a["status"] == "error"),
+        "items": items,
+    }
 
 
 @router.post("/{empresa_id}/enrich-auto")
-async def enriquecer_automaticamente(empresa_id: str):
+async def enriquecer_automaticamente(empresa_id: str, user=Depends(require_auth), conta_id: str = Depends(conta_atual)):
     """Descobre CNPJ por nome quando necessário e enriquece com o máximo de dados."""
-    conn = await get_conn()
-    try:
-        empresa = await conn.fetchrow(
-            "SELECT id, nome, cnpj, dados_cnpj FROM empresas WHERE id = $1",
-            uuid.UUID(empresa_id),
-        )
-        if not empresa:
-            raise HTTPException(status_code=404, detail="Empresa não encontrada")
+    db = get_db()
+    empresa = await db.empresas.find_one({"_id": empresa_id, "conta_id": conta_id}, {"nome": 1, "cnpj": 1, "dados_cnpj": 1})
+    if not empresa:
+        raise HTTPException(status_code=404, detail="Empresa não encontrada")
 
-        cnpj = clean_cnpj(empresa["cnpj"] or "")
-        descoberta = None
+    cnpj = clean_cnpj(empresa.get("cnpj") or "")
+    descoberta = None
 
-        if not cnpj:
-            descoberta = await search_cnpj_by_name(empresa["nome"])
-            if descoberta and descoberta.get("cnpj"):
-                cnpj = clean_cnpj(descoberta["cnpj"])
+    if not cnpj:
+        descoberta = await search_cnpj_by_name(empresa["nome"])
+        if descoberta and descoberta.get("cnpj"):
+            cnpj = clean_cnpj(descoberta["cnpj"])
 
-        if not cnpj:
-            raise HTTPException(status_code=404, detail="Não foi possível descobrir um CNPJ para esta empresa")
+    if not cnpj:
+        raise HTTPException(status_code=404, detail="Não foi possível descobrir um CNPJ para esta empresa")
 
-        data = await fetch_cnpj_data(cnpj)
-        if descoberta:
-            data["descoberta"] = descoberta
+    data = await fetch_cnpj_data(cnpj)
+    if descoberta:
+        data["descoberta"] = descoberta
 
-        # Se nao veio celular da Receita, procura o WhatsApp no site da empresa
-        if not data.get("whatsapp"):
-            try:
-                achado = await descobrir_whatsapp(empresa["nome"])
-                if achado and achado.get("whatsapp"):
-                    data["whatsapp"] = achado["whatsapp"]
-                    data["fonte_whatsapp"] = achado.get("fonte_whatsapp")
-            except Exception:
-                pass
-
-        row = await salvar_dados_cnpj(conn, uuid.UUID(empresa_id), data, cnpj)
-        await log_atividade(
-            conn,
-            uuid.UUID(empresa_id),
-            "enrich_auto",
-            "Empresa enriquecida automaticamente com descoberta de CNPJ",
-            {"cnpj": cnpj, "fonte": data.get("fonte"), "descoberta": descoberta},
-        )
-
-        # Captação de e-mails: empresa + donos (QSA) a partir do site
-        emails_info = {"emails": [], "email_empresa": None, "donos": []}
+    # Se nao veio celular da Receita, procura o WhatsApp no site da empresa
+    if not data.get("whatsapp"):
         try:
-            emails_info = await _descobrir_emails_empresa(conn, row, deadline_s=18.0)
-            row = await conn.fetchrow("SELECT * FROM empresas WHERE id = $1", uuid.UUID(empresa_id))
+            achado = await descobrir_whatsapp(empresa["nome"])
+            if achado and achado.get("whatsapp"):
+                data["whatsapp"] = achado["whatsapp"]
+                data["fonte_whatsapp"] = achado.get("fonte_whatsapp")
         except Exception:
             pass
 
-        return {
-            "ok": True,
-            "empresa": dict(row),
-            "cnpj": cnpj,
-            "qsa": data.get("qsa", []),
-            "descoberta": descoberta,
-            "fonte": data.get("fonte"),
-            "emails": emails_info["emails"],
-            "email_empresa": emails_info["email_empresa"],
-            "emails_donos": emails_info["donos"],
-        }
-    finally:
-        await conn.close()
+    row = await salvar_dados_cnpj(db, empresa_id, data, cnpj, conta_id=conta_id)
+    await log_atividade(
+        db, empresa_id, "enrich_auto",
+        "Empresa enriquecida automaticamente com descoberta de CNPJ",
+        {"cnpj": cnpj, "fonte": data.get("fonte"), "descoberta": descoberta},
+        autor=_autor(user), conta_id=conta_id,
+    )
+
+    # Captação de e-mails: empresa + donos (QSA) a partir do site
+    emails_info = {"emails": [], "email_empresa": None, "donos": []}
+    try:
+        emails_info = await _descobrir_emails_empresa(db, row, deadline_s=18.0, conta_id=conta_id)
+        row = serialize(await db.empresas.find_one({"_id": empresa_id, "conta_id": conta_id}))
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "empresa": row,
+        "cnpj": cnpj,
+        "qsa": data.get("qsa", []),
+        "descoberta": descoberta,
+        "fonte": data.get("fonte"),
+        "emails": emails_info["emails"],
+        "email_empresa": emails_info["email_empresa"],
+        "emails_donos": emails_info["donos"],
+    }
 
 
 @router.post("/enrich-all")
-async def enriquecer_todas_empresas(body: EnrichBatchRequest):
+async def enriquecer_todas_empresas(body: EnrichBatchRequest, user=Depends(require_auth), conta_id: str = Depends(conta_atual)):
     """Enriquecimento em lote para todas as empresas cadastradas."""
-    conn = await get_conn()
-    try:
-        rows = await conn.fetch(
-            """SELECT id, nome, cnpj, dados_cnpj
-               FROM empresas
-               ORDER BY score DESC, created_at DESC"""
-        )
+    db = get_db()
+    rows = await db.empresas.find(
+        {"conta_id": conta_id}, {"nome": 1, "cnpj": 1, "dados_cnpj": 1}
+    ).sort([("score", -1), ("created_at", -1)]).to_list(length=None)
 
-        total = len(rows)
-        processed = enriched = discovered = skipped = 0
-        errors = []
-        items = []
+    total = len(rows)
+    processed = enriched = discovered = skipped = 0
+    errors = []
+    items = []
 
-        for row in rows:
-            if body.limit is not None and processed >= body.limit:
-                break
+    for row in rows:
+        if body.limit is not None and processed >= body.limit:
+            break
 
-            processed += 1
-            empresa_id = row["id"]
-            nome = row["nome"]
-            cnpj = clean_cnpj(row["cnpj"] or "")
-            descoberta = None
+        processed += 1
+        empresa_id = row["_id"]
+        nome = row["nome"]
+        cnpj = clean_cnpj(row.get("cnpj") or "")
+        descoberta = None
 
-            already_enriched = bool(row["dados_cnpj"]) and bool(cnpj)
-            if body.only_missing and already_enriched and not body.force:
-                skipped += 1
-                items.append(
-                    {
-                        "id": str(empresa_id),
-                        "nome": nome,
-                        "status": "skipped",
-                        "motivo": "já enriquecida",
-                    }
-                )
-                continue
+        already_enriched = bool(row.get("dados_cnpj")) and bool(cnpj)
+        if body.only_missing and already_enriched and not body.force:
+            skipped += 1
+            items.append({"id": str(empresa_id), "nome": nome, "status": "skipped", "motivo": "já enriquecida"})
+            continue
 
-            try:
-                if not cnpj:
-                    descoberta = await search_cnpj_by_name(nome)
-                    if descoberta and descoberta.get("cnpj"):
-                        cnpj = clean_cnpj(descoberta["cnpj"])
-                        discovered += 1
+        try:
+            if not cnpj:
+                descoberta = await search_cnpj_by_name(nome)
+                if descoberta and descoberta.get("cnpj"):
+                    cnpj = clean_cnpj(descoberta["cnpj"])
+                    discovered += 1
 
-                if not cnpj:
-                    raise HTTPException(status_code=404, detail="CNPJ não encontrado")
+            if not cnpj:
+                raise HTTPException(status_code=404, detail="CNPJ não encontrado")
 
-                data = await fetch_cnpj_data(cnpj)
-                if descoberta:
-                    data["descoberta"] = descoberta
+            data = await fetch_cnpj_data(cnpj)
+            if descoberta:
+                data["descoberta"] = descoberta
 
-                # Se a Receita nao trouxe celular, tenta achar o WhatsApp no site
-                if not data.get("whatsapp"):
-                    try:
-                        achado = await descobrir_whatsapp(nome)
-                        if achado and achado.get("whatsapp"):
-                            data["whatsapp"] = achado["whatsapp"]
-                            data["fonte_whatsapp"] = achado.get("fonte_whatsapp")
-                    except Exception:
-                        pass
+            # Se a Receita nao trouxe celular, tenta achar o WhatsApp no site
+            if not data.get("whatsapp"):
+                try:
+                    achado = await descobrir_whatsapp(nome)
+                    if achado and achado.get("whatsapp"):
+                        data["whatsapp"] = achado["whatsapp"]
+                        data["fonte_whatsapp"] = achado.get("fonte_whatsapp")
+                except Exception:
+                    pass
 
-                saved = await salvar_dados_cnpj(conn, empresa_id, data, cnpj)
-                await log_atividade(
-                    conn,
-                    empresa_id,
-                    "enrich_auto",
-                    "Empresa enriquecida em lote com descoberta de CNPJ" if descoberta else "Empresa enriquecida em lote via CNPJ",
-                    {"cnpj": cnpj, "fonte": data.get("fonte"), "descoberta": descoberta},
-                )
-                enriched += 1
-                items.append(
-                    {
-                        "id": str(empresa_id),
-                        "nome": nome,
-                        "status": "ok",
-                        "cnpj": cnpj,
-                        "fonte": data.get("fonte"),
-                        "razao_social": saved["razao_social"],
-                    }
-                )
-            except Exception as exc:
-                errors.append(
-                    {
-                        "id": str(empresa_id),
-                        "nome": nome,
-                        "error": str(exc),
-                    }
-                )
-                items.append(
-                    {
-                        "id": str(empresa_id),
-                        "nome": nome,
-                        "status": "error",
-                        "error": str(exc),
-                    }
-                )
+            saved = await salvar_dados_cnpj(db, empresa_id, data, cnpj, conta_id=conta_id)
+            await log_atividade(
+                db, empresa_id, "enrich_auto",
+                "Empresa enriquecida em lote com descoberta de CNPJ" if descoberta else "Empresa enriquecida em lote via CNPJ",
+                {"cnpj": cnpj, "fonte": data.get("fonte"), "descoberta": descoberta},
+                autor=_autor(user), conta_id=conta_id,
+            )
+            enriched += 1
+            items.append({
+                "id": str(empresa_id), "nome": nome, "status": "ok",
+                "cnpj": cnpj, "fonte": data.get("fonte"),
+                "razao_social": saved["razao_social"],
+            })
+        except Exception as exc:
+            errors.append({"id": str(empresa_id), "nome": nome, "error": str(exc)})
+            items.append({"id": str(empresa_id), "nome": nome, "status": "error", "error": str(exc)})
 
-        return {
-            "ok": True,
-            "total": total,
-            "processed": processed,
-            "enriched": enriched,
-            "discovered_cnpj": discovered,
-            "skipped": skipped,
-            "errors": errors,
-            "items": items,
-        }
-    finally:
-        await conn.close()
+    return {
+        "ok": True,
+        "total": total,
+        "processed": processed,
+        "enriched": enriched,
+        "discovered_cnpj": discovered,
+        "skipped": skipped,
+        "errors": errors,
+        "items": items,
+    }

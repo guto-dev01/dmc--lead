@@ -2,10 +2,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Depends
 from contextlib import asynccontextmanager
-from routers import auth, empresas, cnpj, whatsapp, campanhas, templates, dashboard, mercado, dmc, decisores
+from routers import auth, empresas, cnpj, whatsapp, campanhas, templates, dashboard, mercado, dmc, decisores, tarefas, equipes
 from services.schema import ensure_schema
 from services.auth import require_auth
-from database import init_pool, close_pool
+from database import init_db, close_db
 import asyncio
 import os
 
@@ -14,6 +14,7 @@ async def wait_for_schema():
     last_error = None
     for _ in range(20):
         try:
+            await init_db()
             await ensure_schema()
             return
         except Exception as exc:
@@ -24,9 +25,8 @@ async def wait_for_schema():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await wait_for_schema()
-    await init_pool()
     yield
-    await close_pool()
+    await close_db()
 
 app = FastAPI(
     title="ImobPro API",
@@ -66,6 +66,8 @@ app.include_router(templates.router, prefix="/api/templates", tags=["Templates"]
 app.include_router(mercado.router, prefix="/api/mercado", tags=["Mercado"], dependencies=[Depends(require_auth)])
 app.include_router(dmc.router, prefix="/api/dmc", tags=["Complexo DMC"], dependencies=[Depends(require_auth)])
 app.include_router(decisores.router, prefix="/api/decisores", tags=["Decisores"], dependencies=[Depends(require_auth)])
+app.include_router(tarefas.router, prefix="/api/tarefas", tags=["Tarefas"], dependencies=[Depends(require_auth)])
+app.include_router(equipes.router, prefix="/api/equipes", tags=["Equipes"], dependencies=[Depends(require_auth)])
 
 @app.get("/")
 async def root():
