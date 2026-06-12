@@ -11,6 +11,8 @@ from urllib.parse import parse_qs, unquote, urljoin, urlparse, quote
 import httpx
 from bs4 import BeautifulSoup
 
+from services.ramos import RAMO_PADRAO, ramo_busca, ramo_stopwords
+
 SEARCH_HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -26,37 +28,6 @@ BLACKLIST_DOMAINS = {
     "wikipedia.org",
     "maps.google.com",
 }
-
-LISTING_HINTS = (
-    "apartamento",
-    "studio",
-    "studios",
-    "cobertura",
-    "sala",
-    "salas",
-    "loja",
-    "lancamento",
-    "lançamento",
-    "empreendimento",
-    "residencial",
-    "condominio",
-    "condomínio",
-    "imovel",
-    "imóvel",
-)
-
-AREA_HINTS = (
-    "consolação",
-    "consolacao",
-    "jardins",
-    "bela vista",
-    "bela-vista",
-    "vila olimpia",
-    "vila olímpia",
-    "paulista",
-    "centro",
-)
-
 
 def _strip_accents(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", value or "")
@@ -122,6 +93,223 @@ def _bing_search(query: str, limit: int = 6) -> list[dict]:
 SERPER_ENDPOINT = "https://google.serper.dev/search"
 BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search"
 GOOGLE_CSE_ENDPOINT = "https://www.googleapis.com/customsearch/v1"
+
+NOMINATIM_ENDPOINT = "https://nominatim.openstreetmap.org/search"
+OVERPASS_ENDPOINT = "https://overpass-api.de/api/interpreter"
+OSM_HEADERS = {
+    "User-Agent": "ImobPro/1.0 (market-intelligence; contato via app)",
+    "Accept-Language": "pt-BR,pt;q=0.9",
+}
+
+# Tipos de via priorizados (vias principais primeiro)
+HIGHWAY_PRIORITY = {
+    "trunk": 0,
+    "primary": 1,
+    "secondary": 2,
+    "tertiary": 3,
+    "residential": 4,
+    "living_street": 5,
+    "unclassified": 6,
+    "road": 7,
+    "pedestrian": 8,
+}
+
+
+def _nominatim_bbox(term: str) -> Optional[tuple[float, float, float, float]]:
+    """Retorna (south, west, north, east) do bairro/região via Nominatim (OSM)."""
+    try:
+        response = httpx.get(
+            NOMINATIM_ENDPOINT,
+            params={
+                "q": f"{term}, São Paulo, SP, Brasil",
+                "format": "json",
+                "limit": 1,
+                "countrycodes": "br",
+            },
+            headers=OSM_HEADERS,
+            timeout=20,
+        )
+        if response.status_code != 200:
+            return None
+        data = response.json()
+    except Exception:
+        return None
+    if not data:
+        return None
+    bbox = data[0].get("boundingbox")  # [south, north, west, east]
+    if not bbox or len(bbox) != 4:
+        return None
+    try:
+        south, north, west, east = (float(x) for x in bbox)
+    except Exception:
+        return None
+    return (south, west, north, east)
+
+
+def _overpass_streets(bbox: tuple[float, float, float, float], limit: int = 200) -> list[str]:
+    """Lista os nomes das ruas dentro do bounding box, vias principais primeiro."""
+    south, west, north, east = bbox
+    types = "|".join(HIGHWAY_PRIORITY.keys())
+    query = (
+        "[out:json][timeout:40];"
+        f'way["highway"~"^({types})$"]["name"]({south},{west},{north},{east});'
+        "out tags;"
+    )
+    try:
+        response = httpx.post(
+            OVERPASS_ENDPOINT,
+            data={"data": query},
+            headers=OSM_HEADERS,
+            timeout=60,
+        )
+        if response.status_code != 200:
+            return []
+        data = response.json()
+    except Exception:
+        return []
+
+    # vias sem endereço residencial/comercial — não têm empreendimentos
+    IGNORAR = ("tunel", "viaduto", "passagem subterranea", "acesso", "trevo",
+               "ponte", "alca", "marginal", "rodoanel")
+
+    ranked: dict[str, tuple[int, str]] = {}
+    for element in data.get("elements", []):
+        tags = element.get("tags") or {}
+        name = (tags.get("name") or "").strip()
+        if not name:
+            continue
+        if _strip_accents(name).lower().startswith(IGNORAR):
+            continue
+        prio = HIGHWAY_PRIORITY.get(tags.get("highway"), 9)
+        key = _strip_accents(name).lower()
+        if key not in ranked or prio < ranked[key][0]:
+            ranked[key] = (prio, name)
+
+    ordered = sorted(ranked.values(), key=lambda pair: (pair[0], pair[1]))
+    return [name for _, name in ordered][:limit]
+
+
+def list_area_streets_sync(area: str, limit: int = 40) -> list[dict]:
+    """Lista as ruas (rua + bairro) da região, distribuídas entre os bairros informados."""
+    terms = _area_terms(area)
+    if not terms:
+        return []
+
+    por_bairro: dict[str, list[str]] = {}
+    for term in terms:
+        bbox = _nominatim_bbox(term)
+        por_bairro[term] = _overpass_streets(bbox, limit=limit * 3) if bbox else []
+
+    out: list[dict] = []
+    seen: set[str] = set()
+    idx = 0
+    maior = max((len(v) for v in por_bairro.values()), default=0)
+    while len(out) < limit and idx < maior:
+        for term in terms:
+            lista = por_bairro.get(term) or []
+            if idx >= len(lista):
+                continue
+            nome = lista[idx]
+            key = _strip_accents(nome).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"rua": nome, "bairro": term})
+            if len(out) >= limit:
+                break
+        idx += 1
+    return out
+
+
+def scan_market_by_streets_sync(
+    area: str,
+    streets: Optional[list[str]] = None,
+    streets_limit: int = 40,
+    hits_per_street: int = 4,
+    limit: int = 120,
+    ramo: str = RAMO_PADRAO,
+    cidade: str = "São Paulo",
+) -> dict:
+    """Varre o mercado RUA A RUA: para cada rua busca itens do ramo na web."""
+    terms = _area_terms(area)
+    bairro_padrao = terms[0] if terms else area
+    termo_rua = ramo_busca(ramo).get("termo_rua", 'empreendimento OR lançamento "{rua}" {bairro} {cidade}')
+
+    if streets:
+        street_list = [
+            {"rua": s.strip(), "bairro": bairro_padrao}
+            for s in streets
+            if s and s.strip()
+        ][:streets_limit]
+    else:
+        street_list = list_area_streets_sync(area, limit=streets_limit)
+
+    if not _has_search_provider():
+        return {
+            "items": [],
+            "summary": {},
+            "sources": {},
+            "total": 0,
+            "ruas": [s["rua"] for s in street_list],
+            "aviso": "Nenhum provedor de busca configurado (BRAVE_API_KEY, SERPER_API_KEY ou GOOGLE_API_KEY).",
+        }
+
+    saved_items: list[dict] = []
+    seen: set[str] = set()
+    discovered_domains: Counter = Counter()
+    ruas_processadas: list[str] = []
+
+    for street in street_list:
+        if len(saved_items) >= limit:
+            break
+        rua = street["rua"]
+        bairro = street.get("bairro") or bairro_padrao
+        ruas_processadas.append(rua)
+        query = termo_rua.format(rua=rua, bairro=bairro, cidade=cidade)
+
+        for hit in _web_search(query, limit=hits_per_street):
+            if len(saved_items) >= limit:
+                break
+            url = hit.get("url", "")
+            if not url or _looks_blocked(url):
+                continue
+            discovered_domains[_domain(url)] += 1
+
+            candidates: list[dict] = []
+            try:
+                html = _fetch_sync(url)
+                candidates = _page_candidates_from_html(html, url, query, None, bairro, ramo)
+            except Exception:
+                candidates = []
+            if not candidates:
+                light = _candidate_from_search_hit(hit, bairro, query, ramo, cidade)
+                if light:
+                    candidates = [light]
+
+            for item in candidates:
+                item["source_url"] = url
+                item["source_query"] = query
+                item.setdefault("dados", {})["rua"] = rua
+                if not item.get("endereco"):
+                    item["endereco"] = rua
+                item["bairro"] = item.get("bairro") or bairro
+                sig = _item_signature(item)
+                if sig in seen:
+                    continue
+                seen.add(sig)
+                item.setdefault("score", _item_score(item))
+                saved_items.append(item)
+                if len(saved_items) >= limit:
+                    break
+
+    summary = Counter([item.get("tipo", "outro") for item in saved_items])
+    return {
+        "items": saved_items,
+        "summary": dict(summary),
+        "sources": dict(discovered_domains),
+        "total": len(saved_items),
+        "ruas": ruas_processadas,
+    }
 
 
 def _google_cse_search(query: str, limit: int = 6) -> list[dict]:
@@ -241,25 +429,78 @@ def _brave_search(query: str, limit: int = 6) -> list[dict]:
     return results
 
 
+DDG_HTML_ENDPOINT = "https://html.duckduckgo.com/html/"
+
+
+def _ddg_unwrap(href: str) -> str:
+    """Desembrulha o link real de um resultado do DuckDuckGo (//duckduckgo.com/l/?uddg=...)."""
+    if not href:
+        return ""
+    if href.startswith("//"):
+        href = "https:" + href
+    try:
+        parsed = urlparse(href)
+    except Exception:
+        return href
+    if "duckduckgo.com" in parsed.netloc and parsed.path.startswith("/l/"):
+        target = parse_qs(parsed.query).get("uddg", [None])[0]
+        if target:
+            return unquote(target)
+    return href
+
+
+def _ddg_search(query: str, limit: int = 6) -> list[dict]:
+    """Busca via DuckDuckGo HTML — SEM chave de API. É o fallback gratuito usado
+    quando nenhum provedor com chave (Google/Serper/Brave) está configurado ou
+    quando eles falham. Garante que o "Mapear mercado" funcione de imediato."""
+    try:
+        html = _fetch_sync(DDG_HTML_ENDPOINT, {"q": query, "kl": "br-pt"})
+    except Exception:
+        return []
+    soup = BeautifulSoup(html, "html.parser")
+    results: list[dict] = []
+    for anchor in soup.select("a.result__a")[:limit]:
+        href = _ddg_unwrap(anchor.get("href", ""))
+        if not href or not href.startswith("http"):
+            continue
+        title = anchor.get_text(" ", strip=True)
+        container = anchor.find_parent(class_="result") or anchor.find_parent("div")
+        snippet = ""
+        if container:
+            sn = container.select_one(".result__snippet")
+            snippet = sn.get_text(" ", strip=True) if sn else ""
+        results.append({
+            "url": href,
+            "title": clean_text(title),
+            "snippet": clean_text(snippet),
+        })
+    return results
+
+
 def _has_search_provider() -> bool:
-    """Há um provedor de busca utilizável? (Google CSE, Serper ou Brave)."""
-    g = os.environ.get("GOOGLE_API_KEY", "").strip() and os.environ.get("GOOGLE_CSE_ID", "").strip()
-    return bool(
-        g
-        or os.environ.get("SERPER_API_KEY", "").strip()
-        or os.environ.get("BRAVE_API_KEY", "").strip()
-    )
+    """Sempre há um provedor utilizável: além de Google CSE / Serper / Brave (com
+    chave), existe o fallback gratuito do DuckDuckGo, que não exige configuração."""
+    return True
 
 
 def _web_search(query: str, limit: int = 6) -> list[dict]:
-    """Busca na web: Google oficial (CSE) > Serper.dev > Brave, conforme as chaves."""
+    """Busca na web: Google oficial (CSE) > Serper.dev > Brave (conforme as chaves)
+    e, por fim, o fallback gratuito do DuckDuckGo. Se um provedor falhar ou vier
+    vazio, tenta o próximo."""
     if os.environ.get("GOOGLE_API_KEY", "").strip() and os.environ.get("GOOGLE_CSE_ID", "").strip():
-        return _google_cse_search(query, limit)
+        results = _google_cse_search(query, limit)
+        if results:
+            return results
     if os.environ.get("SERPER_API_KEY", "").strip():
-        return _serper_search(query, limit)
+        results = _serper_search(query, limit)
+        if results:
+            return results
     if os.environ.get("BRAVE_API_KEY", "").strip():
-        return _brave_search(query, limit)
-    return []
+        results = _brave_search(query, limit)
+        if results:
+            return results
+    # Fallback gratuito, sem chave — funciona para qualquer ramo de imediato.
+    return _ddg_search(query, limit)
 
 
 def _page_text_from_html(html: str) -> str:
@@ -310,16 +551,12 @@ def _extract_jsonld_candidates(soup: BeautifulSoup) -> list[dict]:
     return candidates
 
 
-def _infer_kind(text: str) -> str:
+def _infer_kind(text: str, ramo: str = RAMO_PADRAO) -> str:
+    """Classifica o item conforme as palavras-chave do ramo (1ª regra que casa)."""
     hay = clean_text(text).lower()
-    if any(keyword in hay for keyword in ("incorporadora", "construtora")):
-        return "construtora"
-    if any(keyword in hay for keyword in ("imobiliaria", "imobiliária", "creci", "consultoria de imoveis", "consultoria de imóveis")):
-        return "imobiliaria"
-    if any(keyword in hay for keyword in ("empreendimento", "lancamento", "lançamento", "condominio", "condomínio")):
-        return "empreendimento"
-    if any(keyword in hay for keyword in ("apartamento", "studio", "cobertura", "sala", "loja", "imovel", "imóvel")):
-        return "imovel"
+    for tipo, keywords in ramo_busca(ramo).get("kinds", []):
+        if any(clean_text(keyword).lower() in hay for keyword in keywords):
+            return tipo
     return "outro"
 
 
@@ -360,7 +597,7 @@ def _extract_address(text: str, area: str) -> Optional[str]:
     return None
 
 
-def _pick_best_name(title: str, h1: str, candidates: list[dict]) -> str:
+def _pick_best_name(title: str, h1: str, candidates: list[dict], ramo: str = RAMO_PADRAO) -> str:
     for value in (h1, title):
         if value and len(value.strip()) > 3:
             return value.strip()
@@ -368,7 +605,7 @@ def _pick_best_name(title: str, h1: str, candidates: list[dict]) -> str:
         name = candidate.get("name")
         if name and len(str(name).strip()) > 3:
             return str(name).strip()
-    return "Item imobiliário"
+    return ramo_busca(ramo).get("default_name", "Item")
 
 
 def _canonical_url(url: str) -> str:
@@ -420,13 +657,14 @@ def _item_score(item: dict) -> int:
     return max(0, min(100, int((filled / len(fields)) * 80) + bonus))
 
 
-def _page_candidates_from_html(html: str, url: str, query: str, empresa: Optional[dict], area: str) -> list[dict]:
+def _page_candidates_from_html(html: str, url: str, query: str, empresa: Optional[dict], area: str, ramo: str = RAMO_PADRAO) -> list[dict]:
     soup = BeautifulSoup(html, "html.parser")
     text = soup.get_text(" ", strip=True)
     title = _extract_meta(soup, "og:title") or (soup.title.get_text(" ", strip=True) if soup.title else "")
     description = _extract_meta(soup, "description") or _extract_meta(soup, "og:description")
     h1 = soup.find("h1").get_text(" ", strip=True) if soup.find("h1") else ""
     jsonld_candidates = _extract_jsonld_candidates(soup)
+    listing_hints = tuple(ramo_busca(ramo).get("listing_hints", ()))
     items: list[dict] = []
 
     def build_item(name: str, source_url: str, extra: Optional[dict] = None) -> dict:
@@ -435,8 +673,8 @@ def _page_candidates_from_html(html: str, url: str, query: str, empresa: Optiona
             "empresa_id": empresa.get("id") if empresa else None,
             "empresa_nome": empresa.get("nome") if empresa else None,
             "area": area,
-            "tipo": _infer_kind(combined),
-            "nome": name or _pick_best_name(title, h1, jsonld_candidates),
+            "tipo": _infer_kind(combined, ramo),
+            "nome": name or _pick_best_name(title, h1, jsonld_candidates, ramo),
             "subtitulo": description or "",
             "bairro": _extract_address(combined, area),
             "municipio": "São Paulo" if "são paulo" in clean_text(combined).lower() or "sp" in clean_text(area).lower() else None,
@@ -449,7 +687,7 @@ def _page_candidates_from_html(html: str, url: str, query: str, empresa: Optiona
             "vagas": _extract_number(combined, (r"(\d+)\s*vagas?",)),
             "area_privativa": _extract_area_m2(combined),
             "status": "capturado",
-            "empreendimento": name if _infer_kind(combined) == "empreendimento" else None,
+            "empreendimento": name if _infer_kind(combined, ramo) == "empreendimento" else None,
             "url": _canonical_url(source_url),
             "fonte": _domain(source_url) or source_url,
             "dados": {
@@ -495,41 +733,21 @@ def _page_candidates_from_html(html: str, url: str, query: str, empresa: Optiona
         if len(items) >= 5:
             break
 
-    if not items and any(keyword in clean_text(text).lower() for keyword in LISTING_HINTS):
-        items.append(build_item(_pick_best_name(title, h1, jsonld_candidates), url))
+    if not items and any(keyword in clean_text(text).lower() for keyword in listing_hints):
+        items.append(build_item(_pick_best_name(title, h1, jsonld_candidates, ramo), url))
 
     return items
 
 
-def _normalize_company_tokens(company_name: str) -> list[str]:
+def _normalize_company_tokens(company_name: str, ramo: str = RAMO_PADRAO) -> list[str]:
     normalized = _strip_accents(company_name).lower()
     parts = re.split(r"[^a-z0-9]+", normalized)
-    stopwords = {
-        "incorporadora",
-        "construtora",
-        "imobiliaria",
-        "imobiliária",
-        "consultoria",
-        "assessoria",
-        "empreendimentos",
-        "realty",
-        "brazil",
-        "grupo",
-        "sa",
-        "s.a",
-        "s.a.",
-        "de",
-        "da",
-        "do",
-        "dos",
-        "das",
-        "e",
-    }
+    stopwords = {_strip_accents(w).lower() for w in ramo_stopwords(ramo)}
     return [part for part in parts if part and part not in stopwords]
 
 
-def _guess_company_domains(company_name: str) -> list[str]:
-    tokens = _normalize_company_tokens(company_name)
+def _guess_company_domains(company_name: str, ramo: str = RAMO_PADRAO) -> list[str]:
+    tokens = _normalize_company_tokens(company_name, ramo)
     if not tokens:
         return []
 
@@ -545,23 +763,9 @@ def _guess_company_domains(company_name: str) -> list[str]:
     return candidates
 
 
-def _candidate_internal_links(html: str, base_url: str) -> list[str]:
+def _candidate_internal_links(html: str, base_url: str, ramo: str = RAMO_PADRAO) -> list[str]:
     soup = BeautifulSoup(html, "html.parser")
-    keywords = (
-        "empreend",
-        "lanc",
-        "lanç",
-        "imov",
-        "venda",
-        "alug",
-        "busca",
-        "resid",
-        "decor",
-        "projeto",
-        "produto",
-        "plantao",
-        "plantão",
-    )
+    keywords = tuple(ramo_busca(ramo).get("crawl_keywords", ()))
     seen = set()
     links = []
 
@@ -583,12 +787,12 @@ def _candidate_internal_links(html: str, base_url: str) -> list[str]:
     return links
 
 
-def _candidate_sitemap_links(base_url: str, limit: int = 25) -> list[str]:
+def _candidate_sitemap_links(base_url: str, limit: int = 25, ramo: str = RAMO_PADRAO) -> list[str]:
     sitemap_urls = [
         urljoin(base_url, "/sitemap.xml"),
         urljoin(base_url, "/sitemap_index.xml"),
     ]
-    keywords = ("empreend", "lanc", "lanç", "imov", "venda", "alug", "resid", "decor")
+    keywords = tuple(ramo_busca(ramo).get("crawl_keywords", ()))
     results = []
     seen = set()
 
@@ -615,16 +819,19 @@ def _candidate_sitemap_links(base_url: str, limit: int = 25) -> list[str]:
     return results
 
 
-def _discover_official_site(company_name: str, website: Optional[str] = None) -> Optional[str]:
+def _discover_official_site(company_name: str, website: Optional[str] = None, ramo: str = RAMO_PADRAO) -> Optional[str]:
     candidates = []
     if website and website.startswith("http"):
         candidates.append(website.rstrip("/"))
 
-    for slug in _guess_company_domains(company_name):
+    for slug in _guess_company_domains(company_name, ramo):
         for template in ("https://{slug}.com.br/", "https://www.{slug}.com.br/", "https://{slug}.com/"):
             candidates.append(template.format(slug=slug))
 
-    company_tokens = _normalize_company_tokens(company_name)
+    busca = ramo_busca(ramo)
+    crawl_keywords = tuple(busca.get("crawl_keywords", ()))
+    blocklist = tuple(busca.get("blocklist", ()))
+    company_tokens = _normalize_company_tokens(company_name, ramo)
     for url in candidates:
         try:
             html = _fetch_sync(url)
@@ -637,46 +844,36 @@ def _discover_official_site(company_name: str, website: Optional[str] = None) ->
             return url
         if company_tokens and any(token in clean_text(title).lower() for token in company_tokens[:2]):
             return url
-        if any(keyword in text for keyword in ("empreend", "lanc", "lanç", "imov", "apartamento", "imobiliaria", "imobiliária")):
+        if any(keyword in text for keyword in crawl_keywords):
             return url
 
-    # Fallback: descobre o site oficial via busca na web (Brave)
+    # Fallback: descobre o site oficial via busca na web
     if not _has_search_provider():
         return None
-    for hit in _web_search(f"{company_name} site oficial empreendimentos", limit=5):
+    for hit in _web_search(f"{company_name} site oficial", limit=5):
         url = hit.get("url", "")
         if not url or _looks_blocked(url):
             continue
         host = _domain(url).lower()
-        if any(host.endswith(s) or s in host for s in ("vivareal", "zapimoveis", "imovelweb", "quintoandar", "olx", "chavesnamao")):
-            continue  # portais de classificados nao sao o site da construtora
+        if blocklist and any(host.endswith(s) or s in host for s in blocklist):
+            continue  # portais de classificados nao sao o site da empresa
         if company_tokens and any(token in host.replace("-", "") for token in company_tokens[:2]):
             return f"https://{host}"
 
     return None
 
 
-def _crawl_site_for_items(base_url: str, company: dict, area: str, include_area_listings: bool) -> list[dict]:
+def _crawl_site_for_items(base_url: str, company: dict, area: str, include_area_listings: bool, ramo: str = RAMO_PADRAO) -> list[dict]:
     pages = [base_url]
     try:
         home_html = _fetch_sync(base_url)
     except Exception:
         return []
 
-    pages.extend(_candidate_internal_links(home_html, base_url)[:12])
-    pages.extend(_candidate_sitemap_links(base_url, limit=20))
+    pages.extend(_candidate_internal_links(home_html, base_url, ramo)[:12])
+    pages.extend(_candidate_sitemap_links(base_url, limit=20, ramo=ramo))
 
-    guessed_paths = [
-        "/empreendimentos",
-        "/empreendimento",
-        "/lancamentos",
-        "/lancamento",
-        "/imoveis",
-        "/imovel",
-        "/busca",
-        "/imoveis-a-venda",
-        "/imoveis-para-alugar",
-    ]
+    guessed_paths = ramo_busca(ramo).get("paths", [])
     pages.extend(urljoin(base_url, path) for path in guessed_paths)
 
     if include_area_listings:
@@ -693,7 +890,7 @@ def _crawl_site_for_items(base_url: str, company: dict, area: str, include_area_
             html = _fetch_sync(page_url)
         except Exception:
             continue
-        candidates = _page_candidates_from_html(html, page_url, page_url, company, area)
+        candidates = _page_candidates_from_html(html, page_url, page_url, company, area, ramo)
         for item in candidates:
             item["source_url"] = page_url
             item["source_query"] = page_url
@@ -706,14 +903,14 @@ def _area_terms(area: str) -> list[str]:
     return terms or ([area.strip()] if (area or "").strip() else [])
 
 
-def _build_area_queries(companies: list[dict], area: str) -> list[str]:
-    """Monta as buscas p/ descobrir INCORPORADORAS e IMOBILIÁRIAS da área (não imóveis)."""
+def _build_area_queries(companies: list[dict], area: str, ramo: str = RAMO_PADRAO, cidade: str = "São Paulo") -> list[str]:
+    """Monta as buscas p/ descobrir as EMPRESAS do ramo na área (não os itens)."""
     terms = _area_terms(area)
+    templates = ramo_busca(ramo).get("termos_area", [])
     queries: list[str] = []
     for term in terms:
-        queries.append(f"incorporadora {term} São Paulo")
-        queries.append(f"construtora {term} São Paulo")
-        queries.append(f"imobiliária {term} São Paulo")
+        for template in templates:
+            queries.append(template.format(term=term, cidade=cidade))
     # dedup preservando a ordem
     visto = set()
     out = []
@@ -725,7 +922,7 @@ def _build_area_queries(companies: list[dict], area: str) -> list[str]:
     return out
 
 
-def _candidate_from_search_hit(hit: dict, area: str, query: str = "") -> Optional[dict]:
+def _candidate_from_search_hit(hit: dict, area: str, query: str = "", ramo: str = RAMO_PADRAO, cidade: str = "São Paulo") -> Optional[dict]:
     """Cria um item leve direto do resultado de busca (quando a página não abre/parseia)."""
     url = hit.get("url", "")
     title = clean_text(hit.get("title", ""))
@@ -733,14 +930,15 @@ def _candidate_from_search_hit(hit: dict, area: str, query: str = "") -> Optiona
     if not url or not title:
         return None
     text = f"{title} {snippet}"
+    cidade_norm = clean_text(cidade).lower()
     item = {
         "empresa_id": None,
         "area": area,
-        "tipo": _infer_kind(text),
+        "tipo": _infer_kind(text, ramo),
         "nome": title[:255],
         "subtitulo": snippet[:255] or None,
         "bairro": None,
-        "municipio": "São Paulo" if "são paulo" in text.lower() else None,
+        "municipio": cidade if cidade_norm and cidade_norm in text.lower() else None,
         "uf": "SP",
         "endereco": _extract_address(text, area),
         "valor_venda": _extract_price(text),
@@ -750,7 +948,7 @@ def _candidate_from_search_hit(hit: dict, area: str, query: str = "") -> Optiona
         "vagas": _extract_number(text, (r"(\d+)\s*vagas?",)),
         "area_privativa": _extract_area_m2(text),
         "status": "capturado",
-        "empreendimento": title[:255] if _infer_kind(text) == "empreendimento" else None,
+        "empreendimento": title[:255] if _infer_kind(text, ramo) == "empreendimento" else None,
         "url": _canonical_url(url),
         "fonte": _domain(url) or url,
         "dados": {"title": title, "snippet": snippet, "query": query},
@@ -765,6 +963,8 @@ def scan_market_sync(
     include_company_projects: bool = True,
     include_area_listings: bool = True,
     limit: int = 60,
+    ramo: str = RAMO_PADRAO,
+    cidade: str = "São Paulo",
 ) -> dict:
     saved_items: list[dict] = []
     seen = set()
@@ -788,18 +988,18 @@ def scan_market_sync(
         for company in companies:
             if len(saved_items) >= limit:
                 break
-            site = company.get("website") or _discover_official_site(company.get("nome", ""))
+            site = company.get("website") or _discover_official_site(company.get("nome", ""), ramo=ramo)
             if not site:
                 continue
             if not site.startswith("http"):
                 site = f"https://{site}"
             discovered_domains[_domain(site)] += 1
-            if _consume(_crawl_site_for_items(site, company, area, include_area_listings)):
+            if _consume(_crawl_site_for_items(site, company, area, include_area_listings, ramo)):
                 break
 
-    # 2) Busca na web por anúncios/empreendimentos da área (via Brave)
+    # 2) Busca na web por anúncios/itens da área do ramo
     if include_area_listings and len(saved_items) < limit and _has_search_provider():
-        for query in _build_area_queries(companies, area):
+        for query in _build_area_queries(companies, area, ramo, cidade):
             if len(saved_items) >= limit:
                 break
             for hit in _web_search(query, limit=6):
@@ -812,14 +1012,14 @@ def scan_market_sync(
                 candidates: list[dict] = []
                 try:
                     html = _fetch_sync(url)
-                    candidates = _page_candidates_from_html(html, url, query, None, area)
+                    candidates = _page_candidates_from_html(html, url, query, None, area, ramo)
                     for it in candidates:
                         it["source_url"] = url
                         it["source_query"] = query
                 except Exception:
                     candidates = []
                 if not candidates:
-                    light = _candidate_from_search_hit(hit, area, query)
+                    light = _candidate_from_search_hit(hit, area, query, ramo, cidade)
                     if light:
                         candidates = [light]
                 if _consume(candidates):
@@ -840,6 +1040,8 @@ async def scan_market(
     include_company_projects: bool = True,
     include_area_listings: bool = True,
     limit: int = 60,
+    ramo: str = RAMO_PADRAO,
+    cidade: str = "São Paulo",
 ) -> dict:
     return await asyncio.to_thread(
         scan_market_sync,
@@ -848,4 +1050,31 @@ async def scan_market(
         include_company_projects,
         include_area_listings,
         limit,
+        ramo,
+        cidade,
+    )
+
+
+async def list_area_streets(area: str, limit: int = 40) -> list[dict]:
+    return await asyncio.to_thread(list_area_streets_sync, area, limit)
+
+
+async def scan_market_by_streets(
+    area: str,
+    streets: Optional[list[str]] = None,
+    streets_limit: int = 40,
+    hits_per_street: int = 4,
+    limit: int = 120,
+    ramo: str = RAMO_PADRAO,
+    cidade: str = "São Paulo",
+) -> dict:
+    return await asyncio.to_thread(
+        scan_market_by_streets_sync,
+        area,
+        streets,
+        streets_limit,
+        hits_per_street,
+        limit,
+        ramo,
+        cidade,
     )

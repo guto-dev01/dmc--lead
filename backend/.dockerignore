@@ -1,0 +1,14 @@
+# Não enviar para o build do Docker (Railway/Render)
+.venv/
+venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.env
+.env.*
+*.log
+.DS_Store
+sweep_*.py

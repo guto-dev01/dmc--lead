@@ -5,8 +5,15 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from database import get_db, new_id, now, serialize, like
-from services.market_intelligence import scan_market, _strip_accents
+from services.market_intelligence import (
+    scan_market,
+    scan_market_by_streets,
+    list_area_streets,
+    _strip_accents,
+)
 from services.auth import conta_atual
+from services.ramos import normalizar_ramo, ramo_config
+from services.market_intelligence import _domain
 
 router = APIRouter()
 
@@ -24,9 +31,14 @@ class MarketScanRequest(BaseModel):
     include_area_listings: bool = True
     empresa_ids: Optional[List[str]] = None
     limit: Optional[int] = 60
+    por_rua: bool = False
+    ruas: Optional[List[str]] = None
+    ruas_limit: Optional[int] = 40
+    ramo: Optional[str] = None
+    cidade: Optional[str] = "São Paulo"
 
 
-async def _save_market_item(conn, item: dict, conta_id=None) -> dict:
+async def _save_market_item(conn, item: dict, conta_id=None, ramo=None) -> dict:
     db = conn
     chave = {
         "conta_id": conta_id,
@@ -36,6 +48,7 @@ async def _save_market_item(conn, item: dict, conta_id=None) -> dict:
         "url": _clip(item.get("url"), 600),
     }
     sets = {
+        "ramo": normalizar_ramo(ramo),
         "empresa_id": item.get("empresa_id") or None,
         "subtitulo": _clip(item.get("subtitulo"), 255),
         "bairro": _clip(item.get("bairro"), 120),
@@ -128,6 +141,7 @@ async def sugerir_areas(q: Optional[str] = None, limit: int = 8, conta_id: str =
 async def listar_itens(
     area: Optional[str] = None,
     tipo: Optional[str] = None,
+    ramo: Optional[str] = None,
     empresa_id: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
@@ -135,6 +149,8 @@ async def listar_itens(
 ):
     db = get_db()
     filtro: dict = {"conta_id": conta_id}
+    if ramo:
+        filtro["ramo"] = normalizar_ramo(ramo)
     if area:
         filtro["area"] = like(area)
     if tipo:
@@ -172,9 +188,13 @@ async def _anexar_empresa_nome(db, items: list[dict], conta_id=None) -> None:
 
 
 @router.get("/summary")
-async def resumo_mercado(area: Optional[str] = None, conta_id: str = Depends(conta_atual)):
+async def resumo_mercado(area: Optional[str] = None, ramo: Optional[str] = None, conta_id: str = Depends(conta_atual)):
     db = get_db()
-    filtro = {"conta_id": conta_id, "area": like(area)} if area else {"conta_id": conta_id}
+    filtro: dict = {"conta_id": conta_id}
+    if area:
+        filtro["area"] = like(area)
+    if ramo:
+        filtro["ramo"] = normalizar_ramo(ramo)
     total = await db.mercado_itens.count_documents(filtro)
 
     por_tipo_raw = await (await db.mercado_itens.aggregate([
@@ -213,9 +233,125 @@ async def resumo_mercado(area: Optional[str] = None, conta_id: str = Depends(con
     }
 
 
+def _dominio_item(it: dict) -> str:
+    dom = _domain(it.get("url") or "") or (it.get("fonte") or "")
+    dom = (dom or "").strip().lower()
+    return dom[4:] if dom.startswith("www.") else dom
+
+
+class ImportarRequest(BaseModel):
+    ramo: Optional[str] = None
+    area: Optional[str] = None
+    ids: Optional[List[str]] = None
+
+
+@router.post("/importar")
+async def importar_para_empresas(body: ImportarRequest, conta_id: str = Depends(conta_atual)):
+    """Promove os itens descobertos no Mercado para a base de Empresas (no ramo
+    ativo), deduplicando por site/domínio — uma empresa por funerária/site. Depois
+    disso, basta enriquecer o CNPJ para os Decisores aparecerem."""
+    db = get_db()
+    ramo = normalizar_ramo(body.ramo)
+    cfg = ramo_config(ramo)
+    tipos_validos = {t["value"] for t in cfg["tipos"]}
+    tipo_padrao = cfg["tipo_padrao"]
+
+    filtro: dict = {"conta_id": conta_id, "ramo": ramo}
+    if body.ids:
+        filtro["_id"] = {"$in": body.ids}
+    elif body.area:
+        filtro["area"] = like(body.area)
+    itens = [serialize(r) for r in await db.mercado_itens.find(filtro).to_list(length=None)]
+
+    # 1 empresa por domínio: escolhe o melhor item (tipo "de verdade" + maior score)
+    def _rank(x: dict):
+        t = x.get("tipo")
+        tipo_real = 1 if (t in tipos_validos and t != "outro") else 0
+        return (tipo_real, x.get("score") or 0)
+
+    por_dominio: dict[str, dict] = {}
+    for it in itens:
+        dom = _dominio_item(it)
+        if not dom:
+            continue
+        if dom not in por_dominio or _rank(it) > _rank(por_dominio[dom]):
+            por_dominio[dom] = it
+
+    criadas = 0
+    vinculadas = 0
+    for dom, it in por_dominio.items():
+        existente = await db.empresas.find_one(
+            {"conta_id": conta_id, "ramo": ramo, "website": {"$regex": re.escape(dom), "$options": "i"}},
+            {"_id": 1},
+        )
+        if existente:
+            emp_id = existente["_id"]
+        else:
+            tipo = it.get("tipo") if it.get("tipo") in tipos_validos else tipo_padrao
+            nome = (it.get("nome") or "").strip() or dom
+            emp_id = new_id()
+            await db.empresas.insert_one({
+                "_id": emp_id, "conta_id": conta_id, "ramo": ramo,
+                "nome": nome[:255], "tipo": tipo,
+                "website": it.get("url"), "bairro": it.get("bairro"),
+                "municipio": it.get("municipio"), "uf": it.get("uf") or "SP",
+                "regiao": it.get("area"),
+                "score": 0, "status_prospeccao": "nao_iniciado", "prioridade": "normal",
+                "created_at": now(), "updated_at": now(),
+            })
+            criadas += 1
+        # vincula todos os itens daquele domínio à empresa
+        await db.mercado_itens.update_many(
+            {"conta_id": conta_id, "ramo": ramo, "fonte": it.get("fonte")},
+            {"$set": {"empresa_id": emp_id}},
+        )
+        vinculadas += 1
+
+    return {"ok": True, "criadas": criadas, "vinculadas": vinculadas, "total_dominios": len(por_dominio)}
+
+
+@router.get("/ruas")
+async def listar_ruas(area: str, limit: int = 40, conta_id: str = Depends(conta_atual)):
+    """Lista as ruas da região (via OpenStreetMap) para varredura mais precisa."""
+    ruas = await list_area_streets(area, limit=max(1, min(limit, 120)))
+    return {"area": area, "total": len(ruas), "ruas": ruas}
+
+
 @router.post("/scan")
 async def escanear_mercado(body: MarketScanRequest, conta_id: str = Depends(conta_atual)):
     db = get_db()
+    ramo = normalizar_ramo(body.ramo)
+    cidade = (body.cidade or "São Paulo").strip() or "São Paulo"
+
+    # Modo rua a rua: lista as ruas da região (OSM) e busca itens do ramo em cada uma
+    if body.por_rua:
+        result = await scan_market_by_streets(
+            body.area,
+            streets=body.ruas,
+            streets_limit=body.ruas_limit or 40,
+            limit=body.limit or 120,
+            ramo=ramo,
+            cidade=cidade,
+        )
+        saved = []
+        for item in result["items"]:
+            saved.append(await _save_market_item(db, item, conta_id, ramo))
+        resposta = {
+            "ok": True,
+            "area": body.area,
+            "modo": "rua",
+            "ramo": ramo,
+            "ruas": result.get("ruas", []),
+            "saved": len(saved),
+            "total": result["total"],
+            "summary": result["summary"],
+            "sources": result["sources"],
+            "items": saved,
+        }
+        if result.get("aviso"):
+            resposta["aviso"] = result["aviso"]
+        return resposta
+
     if body.empresa_ids:
         companies = await db.empresas.find(
             {"_id": {"$in": body.empresa_ids}, "conta_id": conta_id}
@@ -229,7 +365,7 @@ async def escanear_mercado(body: MarketScanRequest, conta_id: str = Depends(cont
             ors.append({"regiao": like(term)})
             ors.append({"bairro": like(term)})
             ors.append({"municipio": like(term)})
-        companies = await db.empresas.find({"conta_id": conta_id, "$or": ors}).sort(
+        companies = await db.empresas.find({"conta_id": conta_id, "ramo": ramo, "$or": ors}).sort(
             [("score", -1), ("created_at", -1)]
         ).to_list(length=None)
 
@@ -239,15 +375,18 @@ async def escanear_mercado(body: MarketScanRequest, conta_id: str = Depends(cont
         include_company_projects=body.include_company_projects,
         include_area_listings=body.include_area_listings,
         limit=body.limit or 60,
+        ramo=ramo,
+        cidade=cidade,
     )
 
     saved = []
     for item in result["items"]:
-        saved.append(await _save_market_item(db, item, conta_id))
+        saved.append(await _save_market_item(db, item, conta_id, ramo))
 
     return {
         "ok": True,
         "area": body.area,
+        "ramo": ramo,
         "saved": len(saved),
         "total": result["total"],
         "summary": result["summary"],

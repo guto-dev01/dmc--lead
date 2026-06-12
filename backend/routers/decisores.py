@@ -20,6 +20,7 @@ from services.people_search import pesquisar_decisores, buscar_contato
 from services.cnpj_enrichment import casar_email_dono
 from services.auth import require_auth, conta_atual
 from services.atividades import registrar
+from services.ramos import normalizar_ramo
 
 
 def _autor(user) -> Optional[str]:
@@ -56,17 +57,21 @@ async def listar_decisores(
     busca: Optional[str] = None,
     qualificacao: Optional[str] = None,
     tipo: Optional[str] = None,
+    ramo: Optional[str] = None,
     empresa_id: Optional[str] = None,
     conta_id: str = Depends(conta_atual),
 ):
     """Agrega os decisores (QSA da Receita + contatos salvos) de todas as
     empresas enriquecidas, com filtros."""
     db = get_db()
+    filtro_emp: dict = {"conta_id": conta_id}
+    if ramo:
+        filtro_emp["ramo"] = normalizar_ramo(ramo)
     proj = {
-        "nome": 1, "razao_social": 1, "nome_fantasia": 1, "tipo": 1, "municipio": 1,
+        "nome": 1, "razao_social": 1, "nome_fantasia": 1, "tipo": 1, "ramo": 1, "municipio": 1,
         "uf": 1, "bairro": 1, "whatsapp": 1, "telefone": 1, "website": 1, "dados_cnpj": 1,
     }
-    rows = await db.empresas.find({"conta_id": conta_id}, proj).sort([("score", -1), ("nome", 1)]).to_list(length=None)
+    rows = await db.empresas.find(filtro_emp, proj).sort([("score", -1), ("nome", 1)]).to_list(length=None)
     contatos = [serialize(c) for c in await db.contatos.find({"conta_id": conta_id}).to_list(length=None)]
 
     # contatos por empresa, e set de (empresa_id, nome_lower) para marcar 'salvo'
@@ -328,15 +333,18 @@ async def buscar_contato_massa(body: BuscaMassaRequest, conta_id: str = Depends(
 
 
 @router.get("/clientes")
-async def listar_clientes(busca: Optional[str] = None, conta_id: str = Depends(conta_atual)):
-    """Lista os clientes cadastrados (contatos salvos), com a empresa de origem."""
+async def listar_clientes(busca: Optional[str] = None, ramo: Optional[str] = None, conta_id: str = Depends(conta_atual)):
+    """Lista os clientes cadastrados (contatos salvos), com a empresa de origem.
+    Quando `ramo` é informado, traz só os clientes de empresas daquele ramo."""
     db = get_db()
+    ramo_alvo = normalizar_ramo(ramo) if ramo else None
     contatos = await db.contatos.find({"conta_id": conta_id}).sort("created_at", -1).to_list(length=None)
     emp_ids = list({c["empresa_id"] for c in contatos if c.get("empresa_id")})
     emp_map = {}
     if emp_ids:
         empresas = await db.empresas.find(
-            {"_id": {"$in": emp_ids}, "conta_id": conta_id}, {"nome": 1, "nome_fantasia": 1, "razao_social": 1}
+            {"_id": {"$in": emp_ids}, "conta_id": conta_id},
+            {"nome": 1, "nome_fantasia": 1, "razao_social": 1, "ramo": 1},
         ).to_list(length=None)
         emp_map = {e["_id"]: e for e in empresas}
 
@@ -344,6 +352,11 @@ async def listar_clientes(busca: Optional[str] = None, conta_id: str = Depends(c
     for c in contatos:
         c = serialize(c)
         e = emp_map.get(c.get("empresa_id"))
+        if ramo_alvo:
+            # ramo do cliente = ramo da empresa de origem (padrão quando não marcado)
+            emp_ramo = normalizar_ramo((e or {}).get("ramo")) if e else normalizar_ramo(None)
+            if emp_ramo != ramo_alvo:
+                continue
         emp_nome = (e.get("nome_fantasia") or e.get("nome") or e.get("razao_social")) if e else None
         items.append({
             "id": c["id"],

@@ -455,7 +455,7 @@ function EmpresaMapaModal({ empresa, onFechar }) {
   );
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 flex items-start justify-center p-4 overflow-y-auto" onClick={onFechar}>
+    <div className="fixed inset-0 z-[1100] bg-black/70 flex items-start justify-center p-4 overflow-y-auto" onClick={onFechar}>
       <div className="surface-strong rounded-2xl w-full max-w-2xl my-6 border border-white/10" onClick={(ev) => ev.stopPropagation()}>
         <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
           <div className="flex items-center gap-3">
@@ -699,7 +699,7 @@ function FormModal({ form, setForm, parceiros, editId, salvando, onSalvar, onFec
   );
   const picked = form.lat && form.lng ? { lat: Number(form.lat), lng: Number(form.lng) } : null;
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 flex items-start justify-center p-4 overflow-y-auto" onClick={onFechar}>
+    <div className="fixed inset-0 z-[1100] bg-black/70 flex items-start justify-center p-4 overflow-y-auto" onClick={onFechar}>
       <div className="surface-strong rounded-2xl w-full max-w-3xl my-6 border border-white/10" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-5 py-4 border-b border-white/5 sticky top-0 bg-[#0a1418]/95 rounded-t-2xl">
           <h3 className="text-white font-semibold">{editId ? "Editar empreendimento" : "Novo empreendimento"}</h3>
@@ -791,7 +791,7 @@ function DetalheModal({ e, onFechar, onEdit }) {
     </div>
   );
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 flex items-start justify-center p-4 overflow-y-auto" onClick={onFechar}>
+    <div className="fixed inset-0 z-[1100] bg-black/70 flex items-start justify-center p-4 overflow-y-auto" onClick={onFechar}>
       <div className="surface-strong rounded-2xl w-full max-w-2xl my-6 border border-white/10" onClick={(ev) => ev.stopPropagation()}>
         <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
           <div>

@@ -6,6 +6,7 @@ import asyncio, httpx
 from database import get_db, new_id, now, serialize, like, ieq
 from services.auth import require_auth, conta_atual
 from services.atividades import registrar
+from services.ramos import normalizar_ramo
 
 
 def _autor(user) -> Optional[str]:
@@ -23,6 +24,14 @@ from services.cnpj_enrichment import (
 )
 
 router = APIRouter()
+
+
+def _filtro_ramo(ramo: Optional[str]):
+    """Valor de filtro Mongo para o campo `ramo` (sempre normalizado).
+
+    O backfill em ensure_schema() marca todos os docs antigos com o ramo padrão,
+    então uma igualdade simples basta após a subida do app."""
+    return normalizar_ramo(ramo)
 
 
 async def log_atividade(db, empresa_id: str, tipo: str, descricao: str, dados=None, autor=None, conta_id=None):
@@ -92,6 +101,7 @@ class EmpresaCreate(BaseModel):
     nome: str
     cnpj: Optional[str] = None
     tipo: Optional[str] = None
+    ramo: Optional[str] = None
     regiao: Optional[str] = None
     bairro: Optional[str] = None
     municipio: Optional[str] = "São Paulo"
@@ -150,6 +160,7 @@ class EnrichBatchRequest(BaseModel):
 @router.get("")
 async def listar_empresas(
     tipo: Optional[str] = None,
+    ramo: Optional[str] = None,
     busca: Optional[str] = None,
     regiao: Optional[str] = None,
     limit: int = Query(50, le=200),
@@ -158,6 +169,8 @@ async def listar_empresas(
 ):
     db = get_db()
     filtro: dict = {"conta_id": conta_id}
+    if ramo:
+        filtro["ramo"] = _filtro_ramo(ramo)
     if tipo:
         filtro["tipo"] = tipo
     if busca:
@@ -221,14 +234,17 @@ def _queries_geocode(r: dict) -> list:
 
 
 @router.get("/geo")
-async def empresas_geo(conta_id: str = Depends(conta_atual)):
-    """Empresas com coordenadas + status, para o Mapa de Ativos."""
+async def empresas_geo(ramo: Optional[str] = None, conta_id: str = Depends(conta_atual)):
+    """Empresas com coordenadas + status, para o Mapa (filtra pelo ramo ativo)."""
     db = get_db()
+    filtro: dict = {"conta_id": conta_id}
+    if ramo:
+        filtro["ramo"] = _filtro_ramo(ramo)
     proj = {
-        "nome": 1, "status_prospeccao": 1, "lat": 1, "lng": 1, "bairro": 1,
-        "municipio": 1, "uf": 1, "logradouro": 1, "numero": 1, "telefone": 1, "whatsapp": 1,
+        "nome": 1, "tipo": 1, "status_prospeccao": 1, "lat": 1, "lng": 1, "bairro": 1,
+        "municipio": 1, "uf": 1, "logradouro": 1, "numero": 1, "telefone": 1, "whatsapp": 1, "website": 1,
     }
-    rows = await db.empresas.find({"conta_id": conta_id}, proj).sort("nome", 1).to_list(length=None)
+    rows = await db.empresas.find(filtro, proj).sort("nome", 1).to_list(length=None)
     itens = [serialize(r) for r in rows]
     sem = sum(1 for i in itens if not (i.get("lat") and i.get("lng")))
     return {
@@ -317,6 +333,7 @@ async def criar_empresa(empresa: EmpresaCreate, user=Depends(require_auth), cont
     doc = {
         "_id": new_id(), "conta_id": conta_id,
         "nome": empresa.nome, "cnpj": empresa.cnpj, "tipo": empresa.tipo,
+        "ramo": normalizar_ramo(empresa.ramo),
         "regiao": empresa.regiao, "bairro": empresa.bairro, "municipio": empresa.municipio,
         "uf": empresa.uf, "email": empresa.email, "telefone": empresa.telefone,
         "whatsapp": empresa.whatsapp, "website": empresa.website,

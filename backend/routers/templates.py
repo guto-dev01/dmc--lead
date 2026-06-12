@@ -3,21 +3,27 @@ from pydantic import BaseModel
 from typing import Optional, List
 from database import get_db, new_id, serialize
 from services.auth import conta_atual
+from services.ramos import normalizar_ramo
 
 # ---- TEMPLATES ----
 router = APIRouter()
 
 
 @router.get("")
-async def listar_templates(conta_id: str = Depends(conta_atual)):
+async def listar_templates(ramo: Optional[str] = None, conta_id: str = Depends(conta_atual)):
     db = get_db()
-    rows = await db.templates.find({"conta_id": conta_id, "ativo": True}).sort("nome", 1).to_list(length=None)
+    filtro: dict = {"conta_id": conta_id, "ativo": True}
+    if ramo:
+        # mostra os templates do ramo + os globais (sem ramo definido)
+        filtro["$or"] = [{"ramo": normalizar_ramo(ramo)}, {"ramo": None}, {"ramo": {"$exists": False}}]
+    rows = await db.templates.find(filtro).sort("nome", 1).to_list(length=None)
     return [serialize(r) for r in rows]
 
 class TemplateCreate(BaseModel):
     nome: str
     categoria: Optional[str] = None
     conteudo: str
+    ramo: Optional[str] = None
     variaveis: Optional[List[str]] = []
 
 @router.post("")
@@ -26,6 +32,7 @@ async def criar_template(body: TemplateCreate, conta_id: str = Depends(conta_atu
     doc = {
         "_id": new_id(), "conta_id": conta_id, "nome": body.nome, "categoria": body.categoria,
         "conteudo": body.conteudo, "variaveis": body.variaveis or [], "ativo": True,
+        "ramo": normalizar_ramo(body.ramo) if body.ramo else None,
     }
     await db.templates.insert_one(doc)
     return serialize(doc)

@@ -1,10 +1,13 @@
 import re
 from datetime import datetime, timezone
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends
 from database import get_db, serialize
 from routers.whatsapp import normalizar_numero
 from services.auth import conta_atual
+from services.ramos import normalizar_ramo
 
 router = APIRouter()
 
@@ -78,25 +81,34 @@ async def _resumo_campanhas(db, conta_id) -> dict:
     return resumo
 
 
-async def _contar_emails_unicos(db, conta_id) -> int:
+async def _contar_emails_unicos(db, conta_id, ramo=None) -> int:
     """E-mails únicos válidos cadastrados (empresas + contatos), ignorando vazios."""
     unicos = set()
-    for coll in (db.empresas, db.contatos):
-        async for doc in coll.find({"conta_id": conta_id, "email": {"$nin": [None, ""]}}, {"email": 1}):
-            email = (doc.get("email") or "").strip().lower()
-            if _EMAIL_RE.match(email):
-                unicos.add(email)
+    emp_filtro = {"conta_id": conta_id, "email": {"$nin": [None, ""]}}
+    if ramo:
+        emp_filtro["ramo"] = ramo
+    async for doc in db.empresas.find(emp_filtro, {"email": 1}):
+        email = (doc.get("email") or "").strip().lower()
+        if _EMAIL_RE.match(email):
+            unicos.add(email)
+    async for doc in db.contatos.find({"conta_id": conta_id, "email": {"$nin": [None, ""]}}, {"email": 1}):
+        email = (doc.get("email") or "").strip().lower()
+        if _EMAIL_RE.match(email):
+            unicos.add(email)
     return len(unicos)
 
 
-async def _contar_telefones_unicos(db, conta_id) -> int:
+async def _contar_telefones_unicos(db, conta_id, ramo=None) -> int:
     """Telefones únicos cadastrados (empresas + contatos), ignorando vazios/incompletos.
 
     Normaliza para só dígitos com DDI 55 (formato usado no sistema) para deduplicar
     o mesmo número escrito de formas diferentes.
     """
     unicos = set()
-    async for doc in db.empresas.find({"conta_id": conta_id}, {"whatsapp": 1, "telefone": 1, "telefone2": 1}):
+    emp_filtro = {"conta_id": conta_id}
+    if ramo:
+        emp_filtro["ramo"] = ramo
+    async for doc in db.empresas.find(emp_filtro, {"whatsapp": 1, "telefone": 1, "telefone2": 1}):
         for campo in ("whatsapp", "telefone", "telefone2"):
             n = normalizar_numero(doc.get(campo) or "")
             if len(n) >= 10:  # DDI(55) + ao menos 8 dígitos
@@ -110,11 +122,16 @@ async def _contar_telefones_unicos(db, conta_id) -> int:
 
 
 @router.get("")
-async def dashboard_stats(conta_id: str = Depends(conta_atual)):
+async def dashboard_stats(ramo: Optional[str] = None, conta_id: str = Depends(conta_atual)):
     db = get_db()
-    total_empresas = await db.empresas.count_documents({"conta_id": conta_id})
-    total_com_cnpj = await db.empresas.count_documents({"conta_id": conta_id, "cnpj": {"$nin": [None, ""]}})
-    total_com_whatsapp = await db.empresas.count_documents({"conta_id": conta_id, "whatsapp": {"$nin": [None, ""]}})
+    ramo_alvo = normalizar_ramo(ramo) if ramo else None
+    emp_base = {"conta_id": conta_id}
+    if ramo_alvo:
+        emp_base["ramo"] = ramo_alvo
+
+    total_empresas = await db.empresas.count_documents(emp_base)
+    total_com_cnpj = await db.empresas.count_documents({**emp_base, "cnpj": {"$nin": [None, ""]}})
+    total_com_whatsapp = await db.empresas.count_documents({**emp_base, "whatsapp": {"$nin": [None, ""]}})
     total_conversas = await db.conversas.count_documents({"conta_id": conta_id})
     total_mensagens = await db.mensagens.count_documents({"conta_id": conta_id})
 
@@ -127,12 +144,12 @@ async def dashboard_stats(conta_id: str = Depends(conta_atual)):
     empresas_atendimento = await db.conversas.distinct("empresa_id", {"conta_id": conta_id, "empresa_id": {"$ne": None}})
     empresas_em_atendimento = len(empresas_atendimento)
 
-    total_emails = await _contar_emails_unicos(db, conta_id)
-    total_telefones = await _contar_telefones_unicos(db, conta_id)
+    total_emails = await _contar_emails_unicos(db, conta_id, ramo_alvo)
+    total_telefones = await _contar_telefones_unicos(db, conta_id, ramo_alvo)
     campanhas_resumo = await _resumo_campanhas(db, conta_id)
 
     por_tipo_raw = await (await db.empresas.aggregate([
-        {"$match": {"conta_id": conta_id, "tipo": {"$ne": None}}},
+        {"$match": {**emp_base, "tipo": {"$ne": None}}},
         {"$group": {"_id": "$tipo", "total": {"$sum": 1}}},
         {"$sort": {"total": -1}},
     ])).to_list(length=None)
@@ -140,7 +157,7 @@ async def dashboard_stats(conta_id: str = Depends(conta_atual)):
 
     # 5 empresas mais recentes + nº de mensagens (via conversas da empresa)
     recentes_raw = await db.empresas.find(
-        {"conta_id": conta_id}, {"nome": 1, "tipo": 1, "bairro": 1, "score": 1, "created_at": 1}
+        emp_base, {"nome": 1, "tipo": 1, "bairro": 1, "score": 1, "created_at": 1}
     ).sort("created_at", -1).limit(5).to_list(length=5)
     recentes = []
     for e in recentes_raw:

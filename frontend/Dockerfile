@@ -12,6 +12,10 @@ RUN npm run build
 FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
+# Next standalone escuta em $PORT (injetado pela plataforma) e precisa do
+# HOSTNAME 0.0.0.0 para aceitar conexões externas no Railway/Render/Docker.
+ENV HOSTNAME=0.0.0.0
+ENV PORT=3000
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public

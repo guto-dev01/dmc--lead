@@ -83,6 +83,13 @@ def _dono_principal_email() -> str:
     return (settings.dono_principal_email or settings.smtp_from or "").strip()
 
 
+def _admin_email() -> str:
+    """E-mail para onde vai o link de redefinição do login `admin`."""
+    return _normalizar_email(
+        settings.admin_email or settings.dono_principal_email or settings.smtp_from or ""
+    )
+
+
 # ---------------------------------------------------------------------------
 # Login / sessão (admin legado continua funcionando inalterado)
 # ---------------------------------------------------------------------------
@@ -95,21 +102,30 @@ class LoginRequest(BaseModel):
 @router.post("/login")
 async def login(payload: LoginRequest):
     ident = (payload.username or "").strip()
+    db = get_db()
 
-    # 1) Caminho do admin (credenciais de ambiente) — login de emergência, sem
-    #    dados próprios (conta sentinela). Cada pessoa deve entrar pelo seu e-mail.
-    if validate_credentials(ident, payload.password):
-        token = create_access_token(ident, CONTA_ADMIN)
-        return {
-            "ok": True,
-            "access_token": token,
-            "token_type": "bearer",
-            "user": {"username": ident, "display_name": ident.title(), "conta_id": CONTA_ADMIN},
-            "expires_in": 60 * 60 * 12,
-        }
+    # 1) Caminho do admin (login `admin`) — conta sentinela, sem dados próprios.
+    #    A senha pode ter sido redefinida por e-mail (guardada em admin_auth); se
+    #    ainda não houver redefinição, vale a senha de ambiente (ADMIN_PASSWORD).
+    if ident == settings.admin_username:
+        override = await db.admin_auth.find_one({"_id": "admin"})
+        if override and override.get("senha_hash"):
+            senha_ok = verify_password(payload.password, override["senha_hash"])
+        else:
+            senha_ok = validate_credentials(ident, payload.password)
+        if senha_ok:
+            token = create_access_token(ident, CONTA_ADMIN)
+            return {
+                "ok": True,
+                "access_token": token,
+                "token_type": "bearer",
+                "user": {"username": ident, "display_name": ident.title(), "conta_id": CONTA_ADMIN},
+                "expires_in": 60 * 60 * 12,
+            }
+        # Senha incorreta para o admin (o username `admin` não é e-mail de Dono).
+        raise HTTPException(status_code=401, detail="Usuário ou senha inválidos")
 
     # 2) Caminho do dono (cadastrado na base) — login por e-mail.
-    db = get_db()
     usuario = await db.usuarios.find_one({"email": _normalizar_email(ident)})
     if usuario and verify_password(payload.password, usuario.get("senha_hash", "")):
         status = usuario.get("status")
@@ -351,6 +367,29 @@ class EsqueciSenhaRequest(BaseModel):
 async def esqueci_senha(payload: EsqueciSenhaRequest):
     email = _normalizar_email(payload.email)
     db = get_db()
+
+    # Caminho do admin: o login `admin` não é um Dono cadastrado, então a
+    # redefinição é guardada na coleção admin_auth e enviada ao e-mail do admin.
+    if email and email == _admin_email() and mailer.smtp_configurado():
+        ts = now()
+        jti = secrets.token_urlsafe(16)
+        exp = int(ts.timestamp()) + RESET_TTL_SECONDS
+        await db.admin_auth.update_one(
+            {"_id": "admin"},
+            {"$set": {"reset_jti": jti, "reset_exp": exp, "updated_at": ts}},
+            upsert=True,
+        )
+        try:
+            token = create_action_token("reset", CONTA_ADMIN, jti, RESET_TTL_SECONDS)
+            link = f"{_frontend_base()}/redefinir-senha?token={token}"
+            corpo = auth_emails.email_redefinir_senha("Administrador", link)
+            await asyncio.to_thread(
+                mailer.enviar_email, email, "Redefinição de senha", corpo
+            )
+        except Exception:
+            pass
+        return {"ok": True, "message": MSG_RESET_GENERICA}
+
     usuario = await db.usuarios.find_one({"email": email})
 
     # Só donos aprovados conseguem redefinir; demais casos seguem em silêncio
@@ -385,6 +424,13 @@ async def validar_reset(payload: ValidarResetRequest):
     """Usado pela tela de nova senha para validar o link antes de mostrar o formulário."""
     info = verify_action_token(payload.token, "reset")
     db = get_db()
+    if info.get("uid") == CONTA_ADMIN:
+        rec = await db.admin_auth.find_one({"_id": "admin"})
+        if not rec or rec.get("reset_jti") != info.get("jti"):
+            raise HTTPException(status_code=400, detail="Este link é inválido ou já foi utilizado.")
+        if int(rec.get("reset_exp") or 0) < int(now().timestamp()):
+            raise HTTPException(status_code=400, detail="Este link expirou.")
+        return {"ok": True}
     usuario = await db.usuarios.find_one({"_id": info.get("uid")})
     if not usuario or usuario.get("reset_jti") != info.get("jti"):
         raise HTTPException(status_code=400, detail="Este link é inválido ou já foi utilizado.")
@@ -405,13 +451,33 @@ async def redefinir_senha(payload: RedefinirSenhaRequest):
     _validar_senha(payload.senha, payload.confirmar_senha)
 
     db = get_db()
+    ts = now()
+
+    # Redefinição do login `admin` — grava a nova senha em admin_auth. A partir
+    # daí o admin entra com a senha nova (a ADMIN_PASSWORD de ambiente deixa de
+    # valer; para reabilitá-la, apague o documento admin_auth/admin).
+    if info.get("uid") == CONTA_ADMIN:
+        rec = await db.admin_auth.find_one({"_id": "admin"})
+        if not rec or rec.get("reset_jti") != info.get("jti"):
+            raise HTTPException(status_code=400, detail="Este link é inválido ou já foi utilizado.")
+        if int(rec.get("reset_exp") or 0) < int(now().timestamp()):
+            raise HTTPException(status_code=400, detail="Este link expirou.")
+        await db.admin_auth.update_one(
+            {"_id": "admin"},
+            {"$set": {"senha_hash": hash_password(payload.senha), "updated_at": ts},
+             "$unset": {"reset_jti": "", "reset_exp": ""}},
+        )
+        return {
+            "ok": True,
+            "message": "Sua senha foi redefinida com sucesso. Você já pode acessar o sistema.",
+        }
+
     usuario = await db.usuarios.find_one({"_id": info.get("uid")})
     if not usuario or usuario.get("reset_jti") != info.get("jti"):
         raise HTTPException(status_code=400, detail="Este link é inválido ou já foi utilizado.")
     if int(usuario.get("reset_exp") or 0) < int(now().timestamp()):
         raise HTTPException(status_code=400, detail="Este link expirou.")
 
-    ts = now()
     # Uso único: limpa o jti para o mesmo link não servir de novo.
     await db.usuarios.update_one(
         {"_id": usuario["_id"]},

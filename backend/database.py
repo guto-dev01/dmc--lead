@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     brave_api_key: str = ""
     admin_username: str = "admin"
     admin_password: str = "admin123"
+    # E-mail do administrador — destino do link de redefinição de senha do login
+    # `admin` (que não é um Dono cadastrado). Se vazio, cai no dono_principal_email
+    # e, por fim, no smtp_from.
+    admin_email: str = ""
     # E-mail do dono principal — recebe as solicitações de novos cadastros para
     # aprovar/recusar. Se vazio, usa o SMTP_FROM como destinatário.
     dono_principal_email: str = ""

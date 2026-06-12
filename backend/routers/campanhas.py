@@ -55,6 +55,8 @@ class CampanhaDisparoEmail(BaseModel):
     assunto: str
     mensagem: str
     html: Optional[bool] = False
+    # Intervalo (em segundos) de espera entre um e-mail e o próximo. None = padrão.
+    intervalo_segundos: Optional[float] = None
     media_url: Optional[str] = None
     media_base64: Optional[str] = None
     media_mimetype: Optional[str] = None
@@ -343,6 +345,16 @@ def _traduzir_erro_whatsapp(erro: Exception, numero: str) -> str:
     return detalhe or "Falha ao enviar mensagem."
 
 
+def _aplicar_variaveis(texto: Optional[str], row: dict) -> str:
+    """Substitui as variáveis pelo dado real do destinatário.
+    {{empresa}} = nome da empresa (da empresa de origem, quando a fonte é Cliente);
+    {{nome}}    = nome do contato/empresa.
+    """
+    nome = row.get("nome") or ""
+    empresa = row.get("empresa_nome") or nome
+    return (texto or "").replace("{{empresa}}", empresa).replace("{{nome}}", nome)
+
+
 def _dedup_ids(ids) -> list:
     out, vistos = [], set()
     for raw in ids or []:
@@ -544,7 +556,7 @@ async def disparo_rapido(body: CampanhaDisparoRapido, user=Depends(require_auth)
     erros = 0
     erros_detalhes = []
     for row in destinatarios:
-        texto = (body.mensagem or "").replace("{{empresa}}", row["nome"]).replace("{{nome}}", row["nome"]).strip()
+        texto = _aplicar_variaveis(body.mensagem, row).strip()
         emp_id = row.get("empresa_id")
         try:
             if media:
@@ -602,6 +614,56 @@ async def disparo_rapido(body: CampanhaDisparoRapido, user=Depends(require_auth)
         "erros_detalhes": erros_detalhes,
         "media": bool(media),
     }
+
+
+async def _executar_disparo_email(
+    campanha_id, conta_id, destinatarios, assunto_tmpl, mensagem_tmpl, html,
+    anexo, remetente_email, remetente_nome, autor, intervalo,
+):
+    """Envia os e-mails da campanha um a um, respeitando o intervalo entre eles.
+    Roda em segundo plano (asyncio.create_task) e vai atualizando o progresso
+    (campanha.enviados) e o status de cada item — para que intervalos longos não
+    estourem o tempo da requisição HTTP."""
+    db = get_db()
+    enviados = 0
+    try:
+        for row in destinatarios:
+            emp_id = row.get("empresa_id")
+            email = (row.get("email") or "").strip()
+            if not email or "@" not in email:
+                continue
+            assunto = _aplicar_variaveis(assunto_tmpl, row).strip()
+            corpo = _aplicar_variaveis(mensagem_tmpl, row)
+            try:
+                await asyncio.to_thread(
+                    _smtp_enviar, email, assunto, corpo, bool(html), anexo,
+                    remetente_email, remetente_nome,
+                )
+                if emp_id:
+                    await _registrar_envio_email(db, emp_id, email, assunto, autor=autor, conta_id=conta_id)
+                enviados += 1
+                if emp_id:
+                    await db.campanha_itens.update_one(
+                        {"campanha_id": campanha_id, "empresa_id": emp_id},
+                        {"$set": {"status": "enviado", "enviado_em": now()}},
+                    )
+            except Exception:
+                if emp_id:
+                    await db.campanha_itens.update_one(
+                        {"campanha_id": campanha_id, "empresa_id": emp_id},
+                        {"$set": {"status": "erro"}},
+                    )
+            # progresso parcial (a tela de campanhas mostra "enviados")
+            await db.campanhas.update_one(
+                {"_id": campanha_id, "conta_id": conta_id}, {"$set": {"enviados": enviados}}
+            )
+            if intervalo > 0:
+                await asyncio.sleep(intervalo)
+    finally:
+        await db.campanhas.update_one(
+            {"_id": campanha_id, "conta_id": conta_id},
+            {"$set": {"enviados": enviados, "status": "concluida", "data_fim": now()}},
+        )
 
 
 @router.post("/disparo-email")
@@ -689,55 +751,68 @@ async def disparo_email(body: CampanhaDisparoEmail, user=Depends(require_auth), 
             "_id": new_id(), "conta_id": conta_id, "campanha_id": campanha_id, "empresa_id": emp_id, "status": "pendente",
         })
 
-    enviados = 0
-    erros = 0
-    sem_email = 0
-    for row in destinatarios:
-        emp_id = row.get("empresa_id")
-        email = (row.get("email") or "").strip()
-        if not email or "@" not in email:
-            sem_email += 1
-            continue
+    # Intervalo entre um e-mail e o próximo (segundos). Padrão 3s; teto 1h.
+    intervalo = body.intervalo_segundos
+    intervalo = 3.0 if intervalo is None else max(0.0, min(float(intervalo), 3600.0))
 
-        assunto = (body.assunto or "").replace("{{empresa}}", row["nome"]).replace("{{nome}}", row["nome"]).strip()
-        corpo = (body.mensagem or "").replace("{{empresa}}", row["nome"]).replace("{{nome}}", row["nome"])
-        try:
-            await asyncio.to_thread(
-                _smtp_enviar, email, assunto, corpo, bool(body.html), anexo,
-                remetente_email, remetente_nome,
-            )
-            if emp_id:
-                await _registrar_envio_email(db, emp_id, email, assunto, autor=_autor(user), conta_id=conta_id)
-            enviados += 1
-            if emp_id:
-                await db.campanha_itens.update_one(
-                    {"campanha_id": campanha_id, "empresa_id": emp_id},
-                    {"$set": {"status": "enviado", "enviado_em": now()}},
-                )
-        except Exception:
-            erros += 1
-            if emp_id:
-                await db.campanha_itens.update_one(
-                    {"campanha_id": campanha_id, "empresa_id": emp_id},
-                    {"$set": {"status": "erro"}},
-                )
-        await asyncio.sleep(0.5)
+    validos = sum(1 for d in destinatarios if (d.get("email") or "").strip() and "@" in (d.get("email") or ""))
+    sem_email = len(destinatarios) - validos
 
-    await db.campanhas.update_one(
-        {"_id": campanha_id, "conta_id": conta_id},
-        {"$set": {"enviados": enviados, "status": "concluida", "data_fim": now()}},
-    )
+    # Dispara em segundo plano para suportar intervalos longos sem travar a requisição.
+    asyncio.create_task(_executar_disparo_email(
+        campanha_id, conta_id, destinatarios, body.assunto, body.mensagem, bool(body.html),
+        anexo, remetente_email, remetente_nome, _autor(user), intervalo,
+    ))
 
     return {
         "ok": True,
         "campanha_id": str(campanha_id),
         "canal": "email",
+        "status": "em_andamento",
+        "agendado": True,
         "total": len(destinatarios),
-        "enviados": enviados,
-        "erros": erros,
+        "validos": validos,
+        "enviados": 0,
         "sem_email": sem_email,
+        "intervalo_segundos": intervalo,
+        "tempo_estimado_segundos": int(max(0, validos - 1) * intervalo),
         "media": bool(anexo),
     }
+
+
+class TesteEmail(BaseModel):
+    para: str
+    assunto: Optional[str] = None
+    mensagem: Optional[str] = None
+    html: Optional[bool] = False
+
+
+@router.post("/teste-email")
+async def teste_email(body: TesteEmail, user=Depends(require_auth), conta_id: str = Depends(conta_atual)):
+    """Envia UM e-mail de teste para o endereço informado, usando o assunto/mensagem
+    atuais (com as variáveis preenchidas com dados de exemplo). Serve para conferir
+    o SMTP e como o e-mail chega, sem criar campanha."""
+    if not _smtp_configurado():
+        raise HTTPException(status_code=400, detail="Configure o SMTP (SMTP_HOST e SMTP_FROM) para enviar e-mails.")
+    para = (body.para or "").strip()
+    if "@" not in para or "." not in para.split("@")[-1]:
+        raise HTTPException(status_code=400, detail="Informe um e-mail de destino válido.")
+
+    db = get_db()
+    remetente_email, remetente_nome = await _remetente_do_usuario(db, user)
+    exemplo = {"nome": "Contato de Teste", "empresa_nome": "Empresa de Teste"}
+    assunto = _aplicar_variaveis(body.assunto, exemplo).strip() or "Teste de e-mail — ImobPro"
+    corpo = _aplicar_variaveis(body.mensagem, exemplo) or "Este é um e-mail de teste enviado pelo ImobPro."
+
+    try:
+        await asyncio.to_thread(
+            _smtp_enviar, para, f"[TESTE] {assunto}", corpo, bool(body.html), None,
+            remetente_email, remetente_nome,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Falha ao enviar: {exc}")
+
+    return {"ok": True, "para": para, "remetente": remetente_email or settings.smtp_from}
 
 
 @router.delete("/{campanha_id}")

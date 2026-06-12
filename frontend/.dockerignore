@@ -1,0 +1,10 @@
+# Não enviar para o build do Docker (Railway/Render)
+node_modules/
+.next/
+out/
+npm-debug.log*
+yarn-error.log*
+.env
+.env.*
+.DS_Store
+*.log

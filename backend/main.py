@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Depends
 from contextlib import asynccontextmanager
-from routers import auth, empresas, cnpj, whatsapp, campanhas, templates, dashboard, mercado, dmc, decisores, tarefas, equipes
+from routers import auth, empresas, cnpj, whatsapp, campanhas, templates, dashboard, mercado, dmc, decisores, tarefas, equipes, config
 from services.schema import ensure_schema
 from services.auth import require_auth
 from database import init_db, close_db
@@ -54,6 +54,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(config.router, prefix="/api/config", tags=["Config"])
 app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
 app.include_router(dashboard.router, prefix="/api/dashboard", tags=["Dashboard"], dependencies=[Depends(require_auth)])
 app.include_router(empresas.router, prefix="/api/empresas", tags=["Empresas"], dependencies=[Depends(require_auth)])

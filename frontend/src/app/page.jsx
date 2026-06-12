@@ -1,9 +1,18 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import dynamic from "next/dynamic";
 import DMCPlatform, { DMC_NAV } from "./dmc/DMCPlatform";
 import EquipesPanel from "./equipes/EquipesPanel";
 import AgendaCalendar from "./agenda/AgendaCalendar";
+
+// Mapa (Leaflet) reutilizado da plataforma DMC — só no cliente.
+const MapaEmpresas = dynamic(() => import("./dmc/DMCMapa"), {
+  ssr: false,
+  loading: () => (
+    <div className="h-[480px] grid place-items-center text-slate-500 text-sm">Carregando mapa…</div>
+  ),
+});
 
 const API =
   process.env.NEXT_PUBLIC_API_URL ||
@@ -12,6 +21,19 @@ const API =
 
 const TOKEN_KEY = "imobpro_token";
 const PAGE_KEY = "imobpro_page";
+const RAMO_KEY = "imobpro_ramo";
+const RAMO_PADRAO = "imobiliaria";
+
+const getStoredRamo = () => {
+  if (typeof window === "undefined") return "";
+  return window.localStorage.getItem(RAMO_KEY) || "";
+};
+
+const setStoredRamo = (ramo) => {
+  if (typeof window === "undefined") return;
+  if (ramo) window.localStorage.setItem(RAMO_KEY, ramo);
+  else window.localStorage.removeItem(RAMO_KEY);
+};
 
 const getStoredToken = () => {
   if (typeof window === "undefined") return "";
@@ -42,6 +64,7 @@ const isValidPage = (value) => {
     "decisores",
     "clientes",
     "mercado",
+    "mapa",
     "campanhas",
     "templates",
     "tarefas",
@@ -222,12 +245,47 @@ const CampanhaSituacao = ({ titulo, icon, data, unidade, vazioMsg }) => {
 };
 
 const tipoColor = (tipo) => ({
+  // imobiliária
   incorporadora: "violet",
   construtora: "amber",
   imobiliaria: "sky",
   corretora: "emerald",
   administradora: "orange",
+  // corporativa
+  fundo: "violet",
+  proprietario: "sky",
+  family_office: "emerald",
+  // funerária
+  funeraria: "slate",
+  plano_funerario: "violet",
+  cemiterio: "emerald",
+  crematorio: "amber",
+  floricultura: "rose",
+  // itens de mercado (imobiliária)
+  empreendimento: "violet",
+  imovel: "sky",
 }[tipo] || "slate");
+
+// Rótulo amigável de um tipo (empresa ou item de mercado), p/ filtros dinâmicos.
+const TIPO_LABELS = {
+  incorporadora: "Incorporadora", construtora: "Construtora", imobiliaria: "Imobiliária",
+  corretora: "Corretora", administradora: "Administradora",
+  fundo: "Fundo / Gestora", proprietario: "Proprietário", family_office: "Family Office",
+  funeraria: "Funerária", plano_funerario: "Plano Funerário", cemiterio: "Cemitério",
+  crematorio: "Crematório", floricultura: "Floricultura",
+  empreendimento: "Empreendimento", imovel: "Imóvel", outro: "Outro",
+};
+const tipoLabel = (tipo) => TIPO_LABELS[tipo] || (tipo ? tipo.charAt(0).toUpperCase() + tipo.slice(1) : "—");
+
+// Cor (hex) por tipo, para os marcadores do mapa.
+const TIPO_HEX = {
+  incorporadora: "#8b5cf6", construtora: "#f59e0b", imobiliaria: "#38bdf8",
+  corretora: "#34d399", administradora: "#fb923c",
+  fundo: "#8b5cf6", proprietario: "#38bdf8", family_office: "#34d399",
+  funeraria: "#94a3b8", plano_funerario: "#8b5cf6", cemiterio: "#34d399",
+  crematorio: "#f59e0b", floricultura: "#fb7185",
+};
+const tipoHex = (tipo) => TIPO_HEX[tipo] || "#00e7fc";
 
 // Funil de prospecção (planilha DMC)
 const STATUS_PROSPECCAO = [
@@ -251,16 +309,16 @@ const prioridadeInfo = (k) => PRIORIDADES.find(p => p.key === k) || PRIORIDADES[
 const Modal = ({ open, onClose, title, children }) => {
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative surface-strong rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between p-5 border-b border-[#00e7fc]/10">
-          <h3 className="text-white font-semibold text-lg">{title}</h3>
-          <button onClick={onClose} className="text-slate-400 hover:text-white transition-colors">
-            <Icon name="x" />
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 fade-in">
+      <div className="absolute inset-0 bg-black/65 backdrop-blur-md" onClick={onClose} />
+      <div className="reveal relative surface-strong w-full max-w-lg max-h-[90vh] overflow-y-auto" style={{ boxShadow: "var(--shadow-lg)" }}>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--hairline)] sticky top-0 bg-[var(--background-muted)]/90 backdrop-blur-xl z-10">
+          <h3 className="title text-[17px] text-white">{title}</h3>
+          <button onClick={onClose} aria-label="Fechar" className="w-8 h-8 grid place-items-center rounded-[9px] text-[#7c98a0] hover:text-white hover:bg-[var(--surface-2)] transition-colors">
+            <Icon name="x" size={18} />
           </button>
         </div>
-        <div className="p-5">{children}</div>
+        <div className="p-6">{children}</div>
       </div>
     </div>
   );
@@ -300,17 +358,17 @@ const AuthShell = ({ onBack, backLabel = "Voltar", badge = "Conexão segura", ti
           }}
         />
         <div
-          className="absolute rounded-full blur-[90px] opacity-55 animate-pulse"
+          className="absolute rounded-full blur-[110px] opacity-40"
           style={{
             top: "-15%", right: "-10%", width: 600, height: 600,
-            background: "radial-gradient(circle, rgba(0,231,252,0.30), transparent 65%)",
+            background: "radial-gradient(circle, rgba(0,231,252,0.16), transparent 65%)",
           }}
         />
         <div
-          className="absolute rounded-full blur-[90px] opacity-55"
+          className="absolute rounded-full blur-[110px] opacity-40"
           style={{
             bottom: "-20%", left: "-12%", width: 520, height: 520,
-            background: "radial-gradient(circle, rgba(0,255,106,0.16), transparent 60%)",
+            background: "radial-gradient(circle, rgba(0,255,106,0.10), transparent 60%)",
           }}
         />
         <div
@@ -323,19 +381,15 @@ const AuthShell = ({ onBack, backLabel = "Voltar", badge = "Conexão segura", ti
         {/* ───── Coluna esquerda · Marca ───── */}
         <aside className="hidden lg:flex flex-col">
           <div className="flex flex-col gap-9">
-            <div className="flex items-center gap-4">
-              <div className="w-16 h-16 rounded-3xl bg-gradient-to-br from-[#00e7fc] to-[#00ff4d] flex items-center justify-center text-[#06262b] shadow-[0_0_40px_rgba(0,231,252,0.4)]">
-                <Icon name="building" size={28} />
-              </div>
-              <h1 className="text-[#00ff6a] font-extrabold tracking-[0.35em] text-2xl leading-none">IMOBPRO</h1>
-            </div>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/imobpro-logo.png" alt="ImobPro — Captação de Leads" className="block w-[min(330px,100%)]" />
 
-            <div className="flex flex-col gap-3">
-              <span className="inline-flex items-center gap-2 text-[0.72rem] font-semibold uppercase tracking-[0.22em] text-[#00e7fc] w-fit">
-                <span className="w-1.5 h-1.5 rounded-full bg-[#00e7fc] shadow-[0_0_12px_rgba(0,231,252,0.6)] animate-pulse" />
+            <div className="flex flex-col gap-4">
+              <span className="eyebrow inline-flex items-center gap-2 text-[var(--accent-cyan)] w-fit">
+                <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-cyan)] animate-pulse" />
                 Plataforma de prospecção inteligente
               </span>
-              <h2 className="text-[clamp(2.5rem,4.5vw,3.4rem)] font-bold leading-[0.95] tracking-tight text-gradient">
+              <h2 className="display text-[clamp(2.5rem,4.5vw,3.4rem)] text-gradient">
                 ImobPro
               </h2>
               <p className="text-base leading-relaxed text-slate-300 max-w-[36ch]">
@@ -365,10 +419,10 @@ const AuthShell = ({ onBack, backLabel = "Voltar", badge = "Conexão segura", ti
         </aside>
 
         {/* ───── Coluna direita · Card ───── */}
-        <main className="relative w-full max-w-[440px] mx-auto lg:ml-auto lg:mr-0 overflow-hidden flex flex-col gap-5 rounded-[22px] p-[clamp(1.75rem,3.5vw,2.5rem)] border border-white/[0.07] backdrop-blur-2xl bg-[#0d181c]/[0.78] shadow-[0_24px_70px_-24px_rgba(0,0,0,0.7),0_8px_32px_-12px_rgba(0,231,252,0.15)]">
+        <main className="reveal relative w-full max-w-[440px] mx-auto lg:ml-auto lg:mr-0 overflow-hidden flex flex-col gap-5 rounded-[var(--radius-xl)] p-[clamp(1.75rem,3.5vw,2.5rem)] border border-[var(--hairline-strong)] backdrop-blur-2xl bg-[#0d181c]/[0.82]" style={{ boxShadow: "var(--shadow-lg)" }}>
           <div
             className="pointer-events-none absolute top-0 left-[15%] right-[15%] h-px"
-            style={{ background: "linear-gradient(90deg, transparent 0%, rgba(0,231,252,0.5) 50%, transparent 100%)" }}
+            style={{ background: "linear-gradient(90deg, transparent 0%, rgba(18,231,255,0.45) 50%, transparent 100%)" }}
           />
 
           <header className="flex flex-col gap-2">
@@ -381,11 +435,13 @@ const AuthShell = ({ onBack, backLabel = "Voltar", badge = "Conexão segura", ti
                 <span className="text-base leading-none">‹</span> {backLabel}
               </button>
             )}
-            <span className="inline-flex items-center gap-1.5 w-fit px-2.5 py-1.5 mb-1 rounded-full bg-[#00e7fc]/[0.08] border border-[#00e7fc]/20 text-[#00e7fc] text-[0.7rem] font-semibold uppercase tracking-[0.1em]">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/imobpro-logo.png" alt="ImobPro — Captação de Leads" className="lg:hidden w-[230px] mb-2" />
+            <span className="eyebrow inline-flex items-center gap-1.5 w-fit px-2.5 py-1.5 mb-1 rounded-full bg-[var(--accent-cyan)]/[0.08] border border-[var(--accent-cyan)]/20 text-[var(--accent-cyan)]">
               <Icon name="lock" size={12} /> {badge}
             </span>
-            <h2 className="text-[1.55rem] font-semibold tracking-tight text-white leading-tight">{title}</h2>
-            {subtitle && <p className="text-sm text-slate-400">{subtitle}</p>}
+            <h2 className="title text-[1.55rem] text-white">{title}</h2>
+            {subtitle && <p className="text-sm text-[#9fbac1]">{subtitle}</p>}
           </header>
 
           {error && (
@@ -698,11 +754,9 @@ const LandingPage = ({ onEnter, onRegister }) => {
       {/* ───────── Topo / navegação ───────── */}
       <header className="sticky top-0 z-30 border-b border-white/[0.06] bg-[#06121580]/80 backdrop-blur-xl">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-5 sm:px-8">
-          <a href="#inicio" className="flex items-center gap-3">
-            <span className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-[#12e7ff] to-[#00ff6a] text-[#06262b] shadow-[0_0_20px_rgba(18,231,255,0.35)]">
-              <Icon name="building" size={18} />
-            </span>
-            <span className="text-[#00ff6a] text-sm font-extrabold tracking-[0.32em] leading-none">IMOBPRO</span>
+          <a href="#inicio" className="flex items-center">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/imobpro-logo.png" alt="ImobPro — Captação de Leads" className="h-12 w-auto" />
           </a>
 
           <nav className="hidden items-center gap-8 md:flex">
@@ -1488,6 +1542,8 @@ export default function App() {
   const [showLogin, setShowLogin] = useState(false); // landing institucional antes do login
   const [authMode, setAuthMode] = useState("login"); // "login" | "register" | "forgot"
   const [page, setPage] = useState("dashboard");
+  const [ramo, setRamoState] = useState(RAMO_PADRAO);
+  const [ramosCfg, setRamosCfg] = useState(null); // { ramos, padrao, config }
   const [stats, setStats] = useState(null);
   const [empresas, setEmpresas] = useState([]);
   const [templates, setTemplates] = useState([]);
@@ -1501,6 +1557,24 @@ export default function App() {
   const [campanhaDescricao, setCampanhaDescricao] = useState("");
   const [campanhaAssunto, setCampanhaAssunto] = useState("");
   const [campanhaMensagem, setCampanhaMensagem] = useState("");
+  const [campanhaIntervalo, setCampanhaIntervalo] = useState("3"); // s entre um e-mail e o outro
+  const [emailTeste, setEmailTeste] = useState("");
+  const [enviandoTeste, setEnviandoTeste] = useState(false);
+  const campanhaAssuntoRef = useRef(null);
+  const campanhaMensagemRef = useRef(null);
+  // Insere uma variável (ex.: {{empresa}}) na posição do cursor do campo.
+  const inserirVariavel = (ref, valor, setter, token) => {
+    const el = ref.current;
+    const base = valor || "";
+    if (!el) { setter(base + token); return; }
+    const start = el.selectionStart ?? base.length;
+    const end = el.selectionEnd ?? base.length;
+    const novo = base.slice(0, start) + token + base.slice(end);
+    setter(novo);
+    requestAnimationFrame(() => {
+      try { el.focus(); const p = start + token.length; el.setSelectionRange(p, p); } catch (_) {}
+    });
+  };
   const [campanhaTemplateId, setCampanhaTemplateId] = useState("");
   const [campanhaMediaUrl, setCampanhaMediaUrl] = useState("");
   const [campanhaMediaNome, setCampanhaMediaNome] = useState("");
@@ -1535,10 +1609,18 @@ export default function App() {
   const [clienteSelectedIds, setClienteSelectedIds] = useState([]);
   const [marketLoading, setMarketLoading] = useState(false);
   const [marketScanning, setMarketScanning] = useState(false);
+  const [importingMarket, setImportingMarket] = useState(false);
+  const [geo, setGeo] = useState(null); // { total, com_coords, sem_coords, empresas }
+  const [geoLoading, setGeoLoading] = useState(false);
+  const [geocoding, setGeocoding] = useState(false);
   const [search, setSearch] = useState("");
   const [filterTipo, setFilterTipo] = useState("");
   const [marketArea, setMarketArea] = useState("Consolação/Jardins/Bela Vista");
   const [marketTipo, setMarketTipo] = useState("");
+  const [marketByStreet, setMarketByStreet] = useState(false);
+  const [marketRuasLimit, setMarketRuasLimit] = useState(30);
+  const [marketRuas, setMarketRuas] = useState([]);
+  const [loadingRuas, setLoadingRuas] = useState(false);
   const [areaSugg, setAreaSugg] = useState([]);
   const [areaOpen, setAreaOpen] = useState(false);
   const [waStatus, setWaStatus] = useState(null);
@@ -1675,10 +1757,60 @@ export default function App() {
 
   const loadDashboard = useCallback(async () => {
     try {
-      const data = await api("/api/dashboard");
+      const data = await api(`/api/dashboard${ramo ? `?ramo=${encodeURIComponent(ramo)}` : ""}`);
       setStats(data);
     } catch (e) {}
+  }, [ramo]);
+
+  const setRamo = useCallback((novo) => {
+    setRamoState(novo);
+    setStoredRamo(novo);
   }, []);
+
+  // Carrega a configuração dos ramos (rótulos, tipos, cores) após o login e
+  // restaura o ramo ativo salvo (seletor global no topo).
+  useEffect(() => {
+    if (!isAuthed) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const cfg = await api("/api/config/ramos");
+        if (cancelled) return;
+        setRamosCfg(cfg);
+        const saved = getStoredRamo();
+        setRamoState(saved && cfg?.config?.[saved] ? saved : (cfg?.padrao || RAMO_PADRAO));
+      } catch (e) {}
+    })();
+    return () => { cancelled = true; };
+  }, [isAuthed]);
+
+  // Configuração do ramo ativo (rótulos, tipos de empresa, cores) — dirige a UI.
+  const ramoCfg = ramosCfg?.config?.[ramo] || null;
+  const ramoTipos = ramoCfg?.tipos || [];
+  const ramoTipoPadrao = ramoCfg?.tipo_padrao || "outro";
+  const ramoUsaDmc = !!ramoCfg?.usa_dmc;
+  const ramoLabel = ramoCfg?.label || "ImobPro";
+  const ramoSubtitulo = ramoCfg?.subtitulo || "Prospecção";
+  const ramosLista = ramosCfg?.ramos || [];
+  // Título da tela/lista de Clientes conforme o ramo: "Clientes Funerário", etc.
+  const RAMO_ADJ = { funeraria: "Funerário", imobiliaria: "Imobiliário", corporativa: "Corporativo" };
+  const clientesTitulo = `Clientes${RAMO_ADJ[ramo] ? " " + RAMO_ADJ[ramo] : ""}`;
+
+  // Mantém o tipo da nova empresa coerente com o ramo ativo.
+  useEffect(() => {
+    setNewEmpresa((p) => (ramoTipos.some((t) => t.value === p.tipo) ? p : { ...p, tipo: ramoTipoPadrao }));
+  }, [ramo, ramoTipoPadrao]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sair de telas do DMC quando o ramo ativo não é o corporativo.
+  useEffect(() => {
+    if (!ramoUsaDmc && page.startsWith("dmc:")) setPage("dashboard");
+  }, [ramoUsaDmc, page]);
+
+  // Limpa filtros de tipo ao trocar de ramo (os tipos mudam de um ramo p/ outro).
+  useEffect(() => {
+    setFilterTipo("");
+    setMarketTipo("");
+  }, [ramo]);
 
   const loadEmpresas = useCallback(async () => {
     setLoading(true);
@@ -1686,6 +1818,7 @@ export default function App() {
       const params = new URLSearchParams();
       if (search) params.set("busca", search);
       if (filterTipo) params.set("tipo", filterTipo);
+      if (ramo) params.set("ramo", ramo);
       const data = await api(`/api/empresas?${params}`);
       setEmpresas(data.items || []);
     } catch (e) {
@@ -1693,7 +1826,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [search, filterTipo]);
+  }, [search, filterTipo, ramo]);
 
   const loadDecisores = useCallback(async () => {
     setDecisoresLoading(true);
@@ -1701,6 +1834,7 @@ export default function App() {
       const params = new URLSearchParams();
       if (decBusca) params.set("busca", decBusca);
       if (decQual) params.set("qualificacao", decQual);
+      if (ramo) params.set("ramo", ramo);
       const data = await api(`/api/decisores?${params}`);
       setDecisores(data.items || []);
       setDecisoresQuals(data.qualificacoes || []);
@@ -1709,7 +1843,7 @@ export default function App() {
     } finally {
       setDecisoresLoading(false);
     }
-  }, [decBusca, decQual]);
+  }, [decBusca, decQual, ramo]);
 
   const handlePesquisarDecisores = async () => {
     const alvo = pesquisaEmpresa.trim();
@@ -1763,6 +1897,7 @@ export default function App() {
     try {
       const params = new URLSearchParams();
       if (clienteBusca) params.set("busca", clienteBusca);
+      if (ramo) params.set("ramo", ramo);
       const data = await api(`/api/decisores/clientes?${params}`);
       setClientes(data.items || []);
     } catch (e) {
@@ -1770,7 +1905,7 @@ export default function App() {
     } finally {
       setClientesLoading(false);
     }
-  }, [clienteBusca]);
+  }, [clienteBusca, ramo]);
 
   const handleBuscarTodosContatos = async () => {
     if (!decisores.length) { alert("Não há decisores na lista para buscar."); return; }
@@ -1851,12 +1986,104 @@ export default function App() {
     setPage("campanhas");
   };
 
+  // Lista de clientes em formato limpo para impressão, com TODAS as informações.
+  // Imprime os selecionados; se nada estiver selecionado, imprime todos os carregados.
+  const imprimirClientes = () => {
+    const lista = clienteSelectedIds.length
+      ? clientes.filter(c => clienteSelectedIds.includes(c.id))
+      : clientes;
+    if (!lista.length) { alert("Não há clientes para imprimir."); return; }
+    const esc = (s) => String(s ?? "").replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
+    const v = (s) => esc(s) || "—";
+    const hoje = new Date().toLocaleDateString("pt-BR");
+    const linhas = lista.map((c, i) => `
+      <tr>
+        <td class="num">${i + 1}</td>
+        <td><b>${v(c.nome)}</b></td>
+        <td>${v(c.cargo)}</td>
+        <td>${v(c.empresa_nome)}</td>
+        <td class="brk">${v(c.email)}</td>
+        <td class="nowrap">${v(c.telefone)}</td>
+        <td class="nowrap">${v(c.whatsapp)}</td>
+        <td class="brk">${v(c.linkedin)}</td>
+        <td>${v(c.notas)}</td>
+      </tr>`).join("");
+    const logoUrl = (typeof window !== "undefined" ? window.location.origin : "") + "/imobpro-logo-card.png";
+    const comEmail = lista.filter(c => c.email).length;
+    const comTel = lista.filter(c => c.whatsapp || c.telefone).length;
+    const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+      <title>${esc(clientesTitulo)} — ImobPro</title>
+      <style>
+        :root{ --brand:#ff7a1a; --brand2:#1f6feb; --ink:#0f172a; --soft:#64748b; }
+        *{box-sizing:border-box}
+        html,body{margin:0}
+        body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:var(--ink);padding:18px;
+             -webkit-print-color-adjust:exact;print-color-adjust:exact}
+        .head{display:flex;align-items:center;justify-content:space-between;gap:18px;
+              padding:12px 16px;border-radius:14px;background:linear-gradient(90deg,#f1f5f9,#fff);
+              border:1px solid #e6eaee;box-shadow:0 1px 0 #eee}
+        .head img{height:62px;width:auto;border-radius:10px;display:block}
+        .head .ti{text-align:right}
+        .head h1{font-size:20px;margin:0 0 2px;color:var(--ink);letter-spacing:-.01em}
+        .head .sub{font-size:12px;color:var(--soft)}
+        .chips{display:flex;gap:8px;justify-content:flex-end;margin-top:6px;flex-wrap:wrap}
+        .chip{font-size:11px;font-weight:600;padding:3px 9px;border-radius:999px;background:#eef2f7;color:#334155}
+        .chip.a{background:rgba(255,122,26,.12);color:#b4530a}
+        .chip.b{background:rgba(31,111,235,.12);color:#1750b0}
+        .bar{height:3px;border-radius:3px;margin:12px 0 14px;background:linear-gradient(90deg,var(--brand),var(--brand2))}
+        table{width:100%;border-collapse:collapse;font-size:11px;table-layout:auto}
+        thead{display:table-header-group}
+        th,td{text-align:left;padding:6px 8px;border:1px solid #e6eaee;vertical-align:top;word-break:break-word}
+        th{background:#0f172a;color:#fff;text-transform:uppercase;font-size:9.5px;letter-spacing:.04em;font-weight:700}
+        td.num,th.num{width:28px;text-align:right;color:#94a3b8}
+        td.nowrap{white-space:nowrap}
+        td.brk{word-break:break-all}
+        tbody tr:nth-child(even) td{background:#f7f9fb}
+        td b{color:var(--ink)}
+        .foot{margin-top:14px;display:flex;justify-content:space-between;font-size:10.5px;color:var(--soft);
+              border-top:1px solid #e6eaee;padding-top:8px}
+        @page{size:A4 landscape;margin:10mm}
+      </style></head>
+      <body>
+        <div class="head">
+          <img src="${logoUrl}" alt="ImobPro" />
+          <div class="ti">
+            <h1>${esc(clientesTitulo)}</h1>
+            <div class="sub">Relatório de clientes · ${hoje}</div>
+            <div class="chips">
+              <span class="chip">${lista.length} clientes</span>
+              <span class="chip a">${comEmail} com e-mail</span>
+              <span class="chip b">${comTel} com telefone</span>
+            </div>
+          </div>
+        </div>
+        <div class="bar"></div>
+        <table>
+          <thead><tr>
+            <th class="num">#</th><th>Nome</th><th>Cargo</th><th>Empresa</th><th>E-mail</th>
+            <th>Telefone</th><th>WhatsApp</th><th>LinkedIn</th><th>Notas</th>
+          </tr></thead>
+          <tbody>${linhas}</tbody>
+        </table>
+        <div class="foot">
+          <span>ImobPro · Captação de Leads</span>
+          <span>${esc(clientesTitulo)} — gerado em ${hoje}</span>
+        </div>
+        <script>window.onload=function(){setTimeout(function(){window.print();},250);}<\/script>
+      </body></html>`;
+    const w = window.open("", "_blank");
+    if (!w) { alert("Permita pop-ups para imprimir a lista."); return; }
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+  };
+
   const loadTemplates = useCallback(async () => {
     try {
-      const data = await api("/api/templates");
+      const data = await api(`/api/templates${ramo ? `?ramo=${encodeURIComponent(ramo)}` : ""}`);
       setTemplates(data);
     } catch (e) {}
-  }, []);
+  }, [ramo]);
 
   const loadCampanhas = useCallback(async () => {
     try {
@@ -1900,13 +2127,38 @@ export default function App() {
 
   const loadCampaignTargets = useCallback(async () => {
     try {
-      const data = await api("/api/empresas?limit=200");
+      const data = await api(`/api/empresas?limit=200${ramo ? `&ramo=${encodeURIComponent(ramo)}` : ""}`);
       const items = Array.isArray(data?.items) ? data.items : [];
       setCampanhaTargets(items.filter(item => item.whatsapp || item.telefone || item.email));
     } catch (e) {
       setCampanhaTargets([]);
     }
-  }, []);
+  }, [ramo]);
+
+  const loadGeo = useCallback(async () => {
+    setGeoLoading(true);
+    try {
+      const data = await api(`/api/empresas/geo${ramo ? `?ramo=${encodeURIComponent(ramo)}` : ""}`);
+      setGeo(data);
+    } catch (e) {
+      setGeo(null);
+    } finally {
+      setGeoLoading(false);
+    }
+  }, [ramo]);
+
+  const handleGeocodificar = async () => {
+    setGeocoding(true);
+    try {
+      const r = await api("/api/empresas/geocodificar", { method: "POST" });
+      await loadGeo();
+      alert(`Geocodificação: ${r.geocodificadas} empresa(s) posicionada(s). ${r.restantes} ainda sem endereço suficiente.`);
+    } catch (e) {
+      alert("Erro ao geocodificar: " + e.message);
+    } finally {
+      setGeocoding(false);
+    }
+  };
 
   const loadMarket = useCallback(async () => {
     setMarketLoading(true);
@@ -1914,9 +2166,14 @@ export default function App() {
       const params = new URLSearchParams();
       if (marketArea) params.set("area", marketArea);
       if (marketTipo) params.set("tipo", marketTipo);
+      if (ramo) params.set("ramo", ramo);
+
+      const summaryParams = new URLSearchParams();
+      if (marketArea) summaryParams.set("area", marketArea);
+      if (ramo) summaryParams.set("ramo", ramo);
 
       const [summary, items] = await Promise.all([
-        api(`/api/mercado/summary?${new URLSearchParams(marketArea ? { area: marketArea } : {}).toString()}`),
+        api(`/api/mercado/summary?${summaryParams.toString()}`),
         api(`/api/mercado/items?${params.toString()}`),
       ]);
       setMarketSummary(summary);
@@ -1927,7 +2184,7 @@ export default function App() {
     } finally {
       setMarketLoading(false);
     }
-  }, [marketArea, marketTipo]);
+  }, [marketArea, marketTipo, ramo]);
 
   const checkWA = useCallback(async () => {
     try {
@@ -2150,6 +2407,27 @@ export default function App() {
     loadCampaignTargets,
   ]);
 
+  const enviarEmailTeste = async () => {
+    const para = emailTeste.trim();
+    if (!para || !para.includes("@")) { alert("Informe um e-mail de destino para o teste."); return; }
+    if (!campanhaMensagem.trim() && !campanhaAssunto.trim()) {
+      alert("Escreva ao menos o assunto ou a mensagem antes de enviar o teste.");
+      return;
+    }
+    setEnviandoTeste(true);
+    try {
+      const r = await api("/api/campanhas/teste-email", {
+        method: "POST",
+        body: JSON.stringify({ para, assunto: campanhaAssunto, mensagem: campanhaMensagem }),
+      });
+      alert(`E-mail de teste enviado para ${r.para}\n(remetente: ${r.remetente}).\nConfira a caixa de entrada e o spam.`);
+    } catch (e) {
+      alert("Erro ao enviar teste: " + e.message);
+    } finally {
+      setEnviandoTeste(false);
+    }
+  };
+
   const dispararCampanhaEmail = useCallback(async () => {
     if (!campanhaSelectedIds.length) {
       alert("Selecione ao menos um destinatário para disparar.");
@@ -2166,6 +2444,7 @@ export default function App() {
     setCampanhaEnviando(true);
     setCampanhaResultado(null);
     try {
+      const intervaloNum = Math.max(0, Math.min(Number(campanhaIntervalo) || 0, 3600));
       const result = await api("/api/campanhas/disparo-email", {
         method: "POST",
         body: JSON.stringify({
@@ -2175,12 +2454,23 @@ export default function App() {
           contato_ids: campanhaFonte === "clientes" ? campanhaSelectedIds : [],
           assunto: campanhaAssunto,
           mensagem: campanhaMensagem,
+          intervalo_segundos: intervaloNum,
           media_url: campanhaMediaUrl || undefined,
           media_mimetype: campanhaMediaMime || undefined,
           media_filename: campanhaMediaNome || undefined,
         }),
       });
       setCampanhaResultado(result);
+      if (result?.agendado) {
+        const min = Math.ceil((result.tempo_estimado_segundos || 0) / 60);
+        alert(
+          `Campanha iniciada em segundo plano: ${result.validos} e-mail(s) sendo enviados, ` +
+          `1 a cada ${result.intervalo_segundos}s` +
+          (min > 0 ? ` (tempo estimado ≈ ${min} min).` : ".") +
+          (result.sem_email ? `\n${result.sem_email} destinatário(s) sem e-mail foram ignorados.` : "") +
+          `\nAcompanhe o progresso na lista de Campanhas.`
+        );
+      }
       await loadCampanhas();
       await loadCampaignTargets();
     } catch (e) {
@@ -2192,6 +2482,7 @@ export default function App() {
     campanhaSelectedIds,
     campanhaAssunto,
     campanhaMensagem,
+    campanhaIntervalo,
     campanhaMediaUrl,
     campanhaMediaMime,
     campanhaMediaNome,
@@ -2253,8 +2544,9 @@ export default function App() {
     if (page === "tarefas") loadTarefas();
     if (page === "campanhas") { loadCampanhas(); loadTemplates(); loadCampaignTargets(); loadClientes(); }
     if (page === "mercado") loadMarket();
+    if (page === "mapa") loadGeo();
     if (page === "conversas") loadInbox();
-  }, [isAuthed, page, loadEmpresas, loadDecisores, loadClientes, loadTemplates, loadTarefas, loadCampanhas, loadMarket, loadInbox, loadCampaignTargets]);
+  }, [isAuthed, page, loadEmpresas, loadDecisores, loadClientes, loadTemplates, loadTarefas, loadCampanhas, loadMarket, loadGeo, loadInbox, loadCampaignTargets]);
 
   // Tela Conversas: atualiza inbox e thread ativa ao vivo (espelho do WhatsApp)
   useEffect(() => {
@@ -2373,10 +2665,10 @@ export default function App() {
     try {
       await api("/api/empresas", {
         method: "POST",
-        body: JSON.stringify({ ...newEmpresa, municipio: "São Paulo", uf: "SP", regiao: "Consolação/Jardins/Bela Vista" }),
+        body: JSON.stringify({ ...newEmpresa, ramo, municipio: "São Paulo", uf: "SP" }),
       });
       setShowNewModal(false);
-      setNewEmpresa({ nome: "", tipo: "incorporadora", bairro: "", cnpj: "" });
+      setNewEmpresa({ nome: "", tipo: ramoTipoPadrao, bairro: "", cnpj: "" });
       loadEmpresas();
     } catch (e) {
       alert("Erro: " + e.message);
@@ -2577,24 +2869,99 @@ export default function App() {
     }
   };
 
+  const handleListStreets = async () => {
+    setLoadingRuas(true);
+    setMarketRuas([]);
+    try {
+      const params = new URLSearchParams({ area: marketArea, limit: String(marketRuasLimit) });
+      const data = await api(`/api/mercado/ruas?${params.toString()}`);
+      setMarketRuas(data?.ruas || []);
+      if (!data?.ruas?.length) {
+        alert("Nenhuma rua encontrada para essa região (verifique o nome do bairro).");
+      }
+    } catch (e) {
+      alert("Erro ao listar ruas: " + e.message);
+    } finally {
+      setLoadingRuas(false);
+    }
+  };
+
   const handleScanMarket = async () => {
     setMarketScanning(true);
     try {
-      await api("/api/mercado/scan", {
+      const res = await api("/api/mercado/scan", {
         method: "POST",
         body: JSON.stringify({
           area: marketArea,
-          include_company_projects: true,
+          ramo,
+          include_company_projects: !marketByStreet,
           include_area_listings: true,
-          limit: 60,
+          limit: marketByStreet ? 120 : 60,
+          por_rua: marketByStreet,
+          ruas_limit: marketRuasLimit,
         }),
       });
       await loadMarket();
-      alert("Mercado da área atualizado com sucesso.");
+      const capturados = res?.saved ?? res?.total ?? 0;
+      if (res?.aviso) {
+        alert(res.aviso);
+      } else if (marketByStreet) {
+        const nRuas = res?.ruas?.length || 0;
+        alert(`Varredura rua a rua concluída: ${nRuas} rua(s) pesquisada(s), ${capturados} item(ns) capturado(s).`);
+      } else if (capturados > 0) {
+        alert(`Mercado atualizado: ${capturados} item(ns) encontrado(s) na busca.`);
+      } else {
+        alert("Nenhum item encontrado para essa área. Tente um bairro/cidade mais específico (ex.: \"Tatuapé\") ou ative \"Buscar rua por rua\".");
+      }
     } catch (e) {
       alert("Erro ao mapear mercado: " + e.message);
     } finally {
       setMarketScanning(false);
+    }
+  };
+
+  // Importa os itens do Mercado para a base de Empresas (ramo ativo). Depois
+  // oferece descobrir CNPJ/sócios — é isso que gera os Decisores (e, deles, os Clientes).
+  const handleImportarMercado = async () => {
+    if (!marketItems.length) { alert("Mapeie o mercado primeiro."); return; }
+    setImportingMarket(true);
+    try {
+      const r = await api("/api/mercado/importar", {
+        method: "POST",
+        body: JSON.stringify({ ramo, area: marketArea }),
+      });
+      await loadEmpresas();
+      const resumo = `${r.criadas} nova(s) empresa(s) criada(s) de ${r.total_dominios} site(s) descoberto(s).`;
+      const querEnriquecer = confirm(
+        `Importação concluída: ${resumo}\n\n` +
+        `Descobrir CNPJ e sócios agora para gerar os Decisores? (pode levar alguns minutos)`
+      );
+      if (querEnriquecer) {
+        setEnriching(true);
+        try {
+          const res = await api("/api/empresas/enrich-all", {
+            method: "POST",
+            body: JSON.stringify({ only_missing: true, force: false }),
+          });
+          await Promise.all([loadEmpresas(), loadDashboard(), loadDecisores()]);
+          alert(
+            `Enriquecimento concluído: ${res.enriched}/${res.processed} empresa(s) com CNPJ ` +
+            `(${res.discovered_cnpj} CNPJ descobertos). Veja agora os Decisores.`
+          );
+          setPage("decisores");
+        } catch (e) {
+          alert("Erro ao enriquecer: " + e.message);
+        } finally {
+          setEnriching(false);
+        }
+      } else {
+        alert(`${resumo}\nElas já estão em Empresas — use o "Pente fino" lá quando quiser descobrir CNPJ/sócios.`);
+        setPage("empresas");
+      }
+    } catch (e) {
+      alert("Erro ao importar: " + e.message);
+    } finally {
+      setImportingMarket(false);
     }
   };
 
@@ -2641,8 +3008,9 @@ export default function App() {
     { id: "dashboard", icon: "home", label: "Dashboard" },
     { id: "empresas", icon: "building", label: "Empresas" },
     { id: "decisores", icon: "users", label: "Decisores" },
-    { id: "clientes", icon: "users", label: "Clientes" },
+    { id: "clientes", icon: "users", label: clientesTitulo },
     { id: "mercado", icon: "map", label: "Mercado" },
+    { id: "mapa", icon: "map", label: "Mapa" },
     { id: "campanhas", icon: "megaphone", label: "Campanhas" },
     { id: "templates", icon: "file", label: "Templates" },
     { id: "tarefas", icon: "tasks", label: "Tarefas" },
@@ -2651,92 +3019,123 @@ export default function App() {
     { id: "whatsapp", icon: "whatsapp", label: "WhatsApp" },
   ];
 
+  const pageTitle = page === "dashboard" ? "Dashboard" : page === "empresas" ? "Empresas" : page === "decisores" ? "Decisores" : page === "clientes" ? clientesTitulo : page === "mercado" ? "Mercado" : page === "mapa" ? "Mapa" : page === "campanhas" ? "Campanhas" : page === "templates" ? "Templates" : page === "tarefas" ? "Tarefas" : page === "equipes" ? "Equipes" : page === "conversas" ? "Conversas" : page === "whatsapp" ? "WhatsApp" : "Complexo DMC";
+
   return (
-    <div className="flex h-screen bg-[var(--background)] text-white font-sans overflow-hidden">
+    <div className="flex h-screen bg-[var(--background)] text-white overflow-hidden" style={{ fontFamily: "var(--font-sans)" }}>
       {/* SIDEBAR */}
-      <aside className="w-60 flex-shrink-0 flex flex-col bg-black/90 border-r border-white/5">
+      <aside className="w-[248px] flex-shrink-0 flex flex-col bg-[#050f11]/95 border-r border-[var(--hairline)] backdrop-blur-xl">
         {/* Logo */}
-        <div className="p-5 border-b border-white/5">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#00e7fc] to-[#00ff4d] flex items-center justify-center shadow-lg glow-cyan text-[#06262b]">
-              <Icon name="map" size={16} />
-            </div>
-            <div>
-              <h1 className="text-[#00ff6a] font-extrabold tracking-[0.35em] text-sm leading-none">IMOBPRO</h1>
-              <p className="text-slate-500 text-[10px] mt-0.5">Prospeção imobiliária</p>
-            </div>
-          </div>
+        <div className="px-4 py-4 border-b border-[var(--hairline)]">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/imobpro-logo.png" alt="ImobPro — Captação de Leads" className="block mx-auto w-[140px]" />
+          <p className="eyebrow mt-1.5 text-center text-[9px]">{ramoLabel}</p>
         </div>
 
         {/* Nav */}
-        <nav className="flex-1 p-3 space-y-0.5">
-          {navItems.map(item => (
-            <button key={item.id} onClick={() => setPage(item.id)}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-150 ${
-                page === item.id
-                  ? "bg-[#0c3135] text-[#00e7fc] border border-[#00e7fc]/25 shadow-[inset_0_0_0_1px_rgba(18,231,255,0.08)]"
-                  : "text-slate-400 hover:text-white hover:bg-white/5"
-              }`}>
-              <Icon name={item.icon} size={16} />
-              {item.label}
-              {item.id === "whatsapp" && (
-                <span className={`ml-auto w-2 h-2 rounded-full ${waConnected ? "bg-emerald-400" : "bg-rose-400"}`} />
-              )}
-            </button>
-          ))}
-
-          {/* Seções do módulo DMC — integradas ao menu, sem rótulo de grupo */}
-          {DMC_NAV.map(item => {
-            const id = `dmc:${item.key}`;
+        <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-0.5">
+          <p className="eyebrow px-3 pb-2">Operação</p>
+          {navItems.map(item => {
+            const active = page === item.id;
             return (
-              <button key={id} onClick={() => setPage(id)}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-150 ${
-                  page === id
-                    ? "bg-[#0c3135] text-[#00e7fc] border border-[#00e7fc]/25 shadow-[inset_0_0_0_1px_rgba(18,231,255,0.08)]"
-                    : "text-slate-400 hover:text-white hover:bg-white/5"
+              <button key={item.id} onClick={() => setPage(item.id)}
+                className={`group relative w-full flex items-center gap-3 pl-3.5 pr-3 py-2 rounded-[10px] text-[13.5px] font-medium transition-all duration-150 ${
+                  active
+                    ? "bg-[var(--surface-2)] text-white"
+                    : "text-[#7c98a0] hover:text-white hover:bg-[var(--surface-1)]"
                 }`}>
-                <Icon name="building" size={16} />
+                <span className={`absolute left-0 top-1/2 -translate-y-1/2 h-4 w-[3px] rounded-full transition-all ${active ? "opacity-100" : "opacity-0"}`} style={{ background: "var(--accent-gradient)" }} />
+                <span className={active ? "text-[var(--accent-cyan)]" : "text-current"}><Icon name={item.icon} size={17} /></span>
                 {item.label}
+                {item.id === "whatsapp" && (
+                  <span className={`ml-auto w-1.5 h-1.5 rounded-full ${waConnected ? "bg-[var(--success)]" : "bg-[var(--danger)]"}`} />
+                )}
               </button>
             );
           })}
+
+          {/* Seções do módulo DMC — grupo próprio (só no ramo Corporativa) */}
+          {ramoUsaDmc && (
+            <>
+              <p className="eyebrow px-3 pt-5 pb-2">Complexo DMC</p>
+              {DMC_NAV.map(item => {
+                const id = `dmc:${item.key}`;
+                const active = page === id;
+                return (
+                  <button key={id} onClick={() => setPage(id)}
+                    className={`group relative w-full flex items-center gap-3 pl-3.5 pr-3 py-2 rounded-[10px] text-[13.5px] font-medium transition-all duration-150 ${
+                      active
+                        ? "bg-[var(--surface-2)] text-white"
+                        : "text-[#7c98a0] hover:text-white hover:bg-[var(--surface-1)]"
+                    }`}>
+                    <span className={`absolute left-0 top-1/2 -translate-y-1/2 h-4 w-[3px] rounded-full transition-all ${active ? "opacity-100" : "opacity-0"}`} style={{ background: "var(--accent-gradient)" }} />
+                    <span className={active ? "text-[var(--accent-cyan)]" : "text-current"}><Icon name="building" size={17} /></span>
+                    {item.label}
+                  </button>
+                );
+              })}
+            </>
+          )}
         </nav>
 
         {/* WA Status */}
-        <div className="p-3 border-t border-white/5">
-          <div className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs ${
-            waConnected ? "bg-emerald-500/10 text-emerald-300" : "bg-rose-500/10 text-rose-300"
+        <div className="p-3 border-t border-[var(--hairline)]">
+          <div className={`flex items-center gap-2.5 px-3 py-2.5 rounded-[10px] text-xs border ${
+            waConnected
+              ? "text-[var(--success)] border-[rgba(16,185,129,0.25)] bg-[rgba(16,185,129,0.06)]"
+              : "text-[var(--danger)] border-[rgba(239,68,68,0.25)] bg-[rgba(239,68,68,0.06)]"
           }`}>
-            <span className={`w-2 h-2 rounded-full flex-shrink-0 ${waConnected ? "bg-emerald-400 animate-pulse" : "bg-rose-400"}`} />
-            WhatsApp {waConnected ? "Conectado" : "Desconectado"}
+            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${waConnected ? "bg-[var(--success)] animate-pulse" : "bg-[var(--danger)]"}`} />
+            WhatsApp · {waConnected ? "Conectado" : "Desconectado"}
           </div>
         </div>
       </aside>
 
       {/* MAIN */}
       <main className="flex-1 flex flex-col overflow-hidden">
-        <div className="h-16 flex-shrink-0 px-8 lg:px-10 flex items-center justify-between border-b border-white/5 bg-black/15 backdrop-blur-sm">
-          <div>
-            <h2 className="text-white font-semibold text-sm tracking-wide">{page === "dashboard" ? "Dashboard" : page === "empresas" ? "Empresas" : page === "decisores" ? "Decisores" : page === "clientes" ? "Clientes" : page === "mercado" ? "Mercado" : page === "campanhas" ? "Campanhas" : page === "templates" ? "Templates" : page === "tarefas" ? "Tarefas" : page === "conversas" ? "Conversas" : page === "whatsapp" ? "WhatsApp" : "Complexo DMC"}</h2>
-            <p className="text-slate-500 text-xs">Sistema autenticado</p>
+        <div className="h-16 flex-shrink-0 px-8 lg:px-10 flex items-center justify-between border-b border-[var(--hairline)] bg-[var(--background)]/60 backdrop-blur-xl">
+          <div className="flex flex-col gap-0.5">
+            <div className="flex items-center gap-2 text-[11px] text-[#5f7980]">
+              <span className="eyebrow text-[9px]">{page.startsWith("dmc:") ? "Complexo DMC" : "ImobPro"}</span>
+              <span className="opacity-40">/</span>
+              <span>{pageTitle}</span>
+            </div>
+            <h2 className="title text-[19px] text-white">{pageTitle}</h2>
           </div>
           <div className="flex items-center gap-3">
-            <div className="hidden sm:flex items-center gap-2 px-3 py-2 rounded-full bg-white/5 border border-white/5">
-              <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#00e7fc] to-[#00ff4d] text-[#06262b] flex items-center justify-center text-xs font-bold">
+            {ramosLista.length > 1 && (
+              <label className="flex items-center gap-2 pl-3 pr-2 py-1.5 rounded-full bg-[var(--surface-1)] border border-[var(--hairline)]" title="Ramo de atuação">
+                <span className="text-[var(--accent-cyan)]"><Icon name="layers" size={15} /></span>
+                <span className="hidden md:inline eyebrow text-[9px]">Ramo</span>
+                <select
+                  value={ramo}
+                  onChange={(e) => setRamo(e.target.value)}
+                  className="bg-transparent text-white text-[13px] font-medium focus:outline-none cursor-pointer pr-1"
+                >
+                  {ramosLista.map((r) => (
+                    <option key={r} value={r} className="bg-[#0b1416] text-white">
+                      {ramosCfg?.config?.[r]?.label || r}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <div className="hidden sm:flex items-center gap-2.5 pl-2.5 pr-3.5 py-1.5 rounded-full bg-[var(--surface-1)] border border-[var(--hairline)]">
+              <div className="w-7 h-7 rounded-full text-[#06262b] flex items-center justify-center text-[11px] font-semibold" style={{ background: "var(--accent-gradient)" }}>
                 {((authUser?.display_name || authUser?.username || "A").slice(0, 2) || "A").toUpperCase()}
               </div>
               <div className="leading-tight">
-                <div className="text-white text-sm font-medium">{authUser?.display_name || authUser?.username || "Admin"}</div>
-                <div className="text-slate-500 text-[11px]">Acesso liberado</div>
+                <div className="text-white text-[13px] font-medium">{authUser?.display_name || authUser?.username || "Admin"}</div>
+                <div className="text-[#5f7980] text-[10.5px]">Acesso liberado</div>
               </div>
             </div>
-            <button onClick={handleLogout} className="px-4 py-2 rounded-full border border-white/10 text-slate-300 text-sm hover:text-white hover:bg-white/5 transition-colors">
+            <button onClick={handleLogout} className="px-4 py-2 rounded-full btn-secondary text-[13px]">
               Sair
             </button>
           </div>
         </div>
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-8 lg:p-10">
+        <div key={page} className="reveal flex-1 overflow-y-auto p-8 lg:p-10">
 
           {/* COMPLEXO DMC — seções nativas (mesmo tema do ImobPro) */}
           {page.startsWith("dmc:") && <DMCPlatform secaoControlada={page.slice(4)} />}
@@ -2846,10 +3245,10 @@ export default function App() {
                       <Badge color="violet">{templates.length} templates salvos</Badge>
                       <Badge color="amber">{empresasSemWhats} empresas sem WhatsApp</Badge>
                     </div>
-                    <h3 className="text-3xl lg:text-4xl font-bold text-white leading-tight">Painel operacional do ImobPro</h3>
+                    <h3 className="text-3xl lg:text-4xl font-bold text-white leading-tight">Painel operacional · {ramoLabel}</h3>
                     <p className="mt-3 text-sm lg:text-base text-slate-300 max-w-2xl">
-                      Sistema de prospecção imobiliária para Consolação, Jardins e Bela Vista, com base de empresas,
-                      enriquecimento de CNPJ, campanhas, templates e WhatsApp integrado via Evolution API.
+                      {ramoSubtitulo}, com base de empresas, enriquecimento de CNPJ, decisores, clientes,
+                      campanhas, templates e WhatsApp integrado via Evolution API.
                     </p>
                     <div className="mt-6 grid grid-cols-2 md:grid-cols-4 gap-3">
                       {[
@@ -3043,10 +3442,9 @@ export default function App() {
                 <select value={filterTipo} onChange={e => setFilterTipo(e.target.value)}
                   className="surface-soft rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-[#00e7fc]">
                   <option value="">Todos os tipos</option>
-                  <option value="incorporadora">Incorporadora</option>
-                  <option value="construtora">Construtora</option>
-                  <option value="imobiliaria">Imobiliária</option>
-                  <option value="corretora">Corretora</option>
+                  {ramoTipos.map(t => (
+                    <option key={t.value} value={t.value}>{t.label}</option>
+                  ))}
                 </select>
                 <button onClick={handleDiscoverWhatsAppAll} disabled={discoveringAllWA}
                   title="Buscar WhatsApp de todas as empresas sem número"
@@ -3331,8 +3729,8 @@ export default function App() {
             <div className="space-y-5">
               <div className="flex items-start justify-between gap-4 flex-wrap">
                 <div>
-                  <h2 className="text-white text-lg font-bold">Clientes</h2>
-                  <p className="text-slate-500 text-sm">Pessoas cadastradas a partir dos decisores, com e-mail e telefone. Selecione e jogue numa campanha.</p>
+                  <h2 className="text-white text-lg font-bold">{clientesTitulo}</h2>
+                  <p className="text-slate-500 text-sm">Pessoas cadastradas a partir dos decisores, com e-mail e telefone. Selecione e jogue numa campanha — ou clique em Imprimir.</p>
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
                   <Badge color="sky">{clientes.length} clientes</Badge>
@@ -3355,6 +3753,11 @@ export default function App() {
                   <button onClick={() => setClienteSelectedIds([])}
                     className="px-3 py-2.5 rounded-xl text-sm border border-white/10 text-slate-300 hover:bg-white/5 transition-colors">
                     Limpar
+                  </button>
+                  <button onClick={imprimirClientes}
+                    title="Gerar lista para impressão (selecionados ou todos)"
+                    className="px-3 py-2.5 rounded-xl text-sm border border-white/15 text-slate-200 hover:bg-white/5 transition-colors flex items-center gap-1.5">
+                    <Icon name="file" size={14} /> Imprimir
                   </button>
                   <button onClick={() => enviarClientesParaCampanha("whatsapp")}
                     className="px-3 py-2.5 rounded-xl text-sm border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/10 transition-colors flex items-center gap-1.5">
@@ -3456,27 +3859,95 @@ export default function App() {
                     className="mt-3 w-full surface-soft rounded-xl px-3 py-2 text-sm text-white"
                   >
                     <option value="">Todos os itens</option>
-                    <option value="construtora">Incorporadoras/Construtoras</option>
-                    <option value="imobiliaria">Imobiliárias</option>
-                    <option value="empreendimento">Empreendimentos</option>
-                    <option value="imovel">Imóveis</option>
-                    <option value="outro">Outros</option>
+                    {(marketSummary?.por_tipo || []).map(t => (
+                      <option key={t.tipo} value={t.tipo}>{tipoLabel(t.tipo)} ({t.total})</option>
+                    ))}
                   </select>
                 </div>
                 <div className="surface-strong rounded-2xl p-4 flex flex-col justify-between gap-3">
                   <div>
                     <p className="text-slate-500 text-xs uppercase tracking-[0.2em]">Ação</p>
                     <p className="text-sm text-slate-300 mt-2">Varrer sites e anúncios públicos da região</p>
+                    <label className="mt-3 flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={marketByStreet}
+                        onChange={e => setMarketByStreet(e.target.checked)}
+                        className="accent-[#12e7ff]"
+                      />
+                      Buscar rua por rua (mais preciso)
+                    </label>
+                    {marketByStreet && (
+                      <label className="mt-2 flex items-center gap-2 text-[11px] text-slate-400">
+                        Máx. de ruas
+                        <input
+                          type="number"
+                          min={5}
+                          max={120}
+                          value={marketRuasLimit}
+                          onChange={e => setMarketRuasLimit(Math.max(5, Math.min(120, Number(e.target.value) || 30)))}
+                          className="w-16 surface-soft rounded-lg px-2 py-1 text-white text-xs"
+                        />
+                      </label>
+                    )}
                   </div>
-                  <button
-                    onClick={handleScanMarket}
-                    disabled={marketScanning}
-                    className="tech-button rounded-xl px-4 py-2.5 text-sm font-bold disabled:opacity-50"
-                  >
-                    {marketScanning ? "Mapeando..." : "Mapear mercado"}
-                  </button>
+                  <div className="flex flex-col gap-2">
+                    <button
+                      onClick={handleScanMarket}
+                      disabled={marketScanning}
+                      className="tech-button rounded-xl px-4 py-2.5 text-sm font-bold disabled:opacity-50"
+                    >
+                      {marketScanning ? "Mapeando..." : marketByStreet ? "Mapear rua a rua" : "Mapear mercado"}
+                    </button>
+                    <button
+                      onClick={handleListStreets}
+                      disabled={loadingRuas}
+                      className="rounded-xl px-4 py-2 text-xs font-semibold border border-white/10 text-slate-200 hover:bg-white/5 disabled:opacity-50"
+                    >
+                      {loadingRuas ? "Buscando ruas..." : "Listar ruas da região"}
+                    </button>
+                    <button
+                      onClick={handleImportarMercado}
+                      disabled={importingMarket || !marketItems.length}
+                      title="Transforma os itens descobertos em Empresas (para virarem Decisores/Clientes)"
+                      className="rounded-xl px-4 py-2 text-xs font-semibold border border-emerald-400/40 text-emerald-300 hover:bg-emerald-400/10 disabled:opacity-50 flex items-center justify-center gap-1.5"
+                    >
+                      <Icon name="building" size={14} />
+                      {importingMarket ? "Importando..." : "Importar p/ Empresas"}
+                    </button>
+                  </div>
                 </div>
               </div>
+
+              {(loadingRuas || marketRuas.length > 0) && (
+                <div className="surface-strong rounded-2xl p-5">
+                  <div className="flex items-center justify-between mb-3">
+                    <div>
+                      <h3 className="text-white font-semibold">Ruas da região</h3>
+                      <p className="text-slate-500 text-xs mt-0.5">
+                        {loadingRuas
+                          ? "Buscando no OpenStreetMap..."
+                          : `${marketRuas.length} rua(s) encontrada(s) — vias principais primeiro`}
+                      </p>
+                    </div>
+                    {loadingRuas && <div className="w-5 h-5 border-2 border-[#12e7ff] border-t-transparent rounded-full animate-spin" />}
+                  </div>
+                  {marketRuas.length > 0 && (
+                    <div className="flex flex-wrap gap-2 max-h-64 overflow-y-auto">
+                      {marketRuas.map((r, i) => (
+                        <span
+                          key={`${r.rua || r}-${i}`}
+                          className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/3 px-2.5 py-1 text-xs text-slate-200"
+                        >
+                          <span className="text-[#12e7ff] font-mono text-[10px]">{i + 1}</span>
+                          {r.rua || r}
+                          {r.bairro && <span className="text-slate-500">· {r.bairro}</span>}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {marketSummary && (
                 <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
@@ -3594,6 +4065,76 @@ export default function App() {
             </div>
           )}
 
+          {/* MAPA — empresas do ramo ativo com coordenadas */}
+          {page === "mapa" && (
+            <div className="space-y-5">
+              <div className="flex items-start justify-between gap-4 flex-wrap">
+                <div>
+                  <h2 className="text-white text-lg font-bold">Mapa · {ramoLabel}</h2>
+                  <p className="text-slate-500 text-sm">
+                    Empresas do ramo posicionadas no mapa de São Paulo. Cor por tipo; passe o mouse para ver o nome.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Badge color="sky">{geo?.com_coords ?? 0} no mapa</Badge>
+                  {!!geo?.sem_coords && <Badge color="amber">{geo.sem_coords} sem coordenadas</Badge>}
+                  <button onClick={loadGeo} disabled={geoLoading}
+                    className="px-3 py-2 rounded-xl text-sm border border-white/10 text-slate-200 hover:bg-white/5 disabled:opacity-50 flex items-center gap-1.5">
+                    <Icon name="refresh" size={14} /> Atualizar
+                  </button>
+                  {!!geo?.sem_coords && (
+                    <button onClick={handleGeocodificar} disabled={geocoding}
+                      title="Tenta posicionar no mapa as empresas sem coordenadas, a partir do endereço/bairro"
+                      className="px-3 py-2 rounded-xl text-sm border border-emerald-400/40 text-emerald-300 hover:bg-emerald-400/10 disabled:opacity-50 flex items-center gap-1.5">
+                      <Icon name="map" size={14} /> {geocoding ? "Posicionando…" : "Posicionar faltantes"}
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* legenda por tipo */}
+              {ramoTipos.length > 0 && (
+                <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400">
+                  {ramoTipos.filter(t => t.value !== "outro").map(t => (
+                    <span key={t.value} className="inline-flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: tipoHex(t.value) }} />
+                      {t.label}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {geoLoading ? (
+                <div className="flex items-center justify-center py-20">
+                  <div className="w-8 h-8 border-2 border-[#12e7ff] border-t-transparent rounded-full animate-spin" />
+                </div>
+              ) : (geo?.com_coords ?? 0) > 0 ? (
+                <div className="surface-strong rounded-2xl p-2">
+                  <MapaEmpresas
+                    height={560}
+                    markers={(geo?.empresas || [])
+                      .filter(e => e.lat && e.lng)
+                      .map(e => ({
+                        id: e.id,
+                        lat: Number(e.lat),
+                        lng: Number(e.lng),
+                        nome: e.nome,
+                        cor: tipoHex(e.tipo),
+                        label: [tipoLabel(e.tipo), e.bairro].filter(Boolean).join(" · "),
+                      }))}
+                  />
+                </div>
+              ) : (
+                <div className="surface-strong rounded-2xl p-10 text-center text-slate-400">
+                  Nenhuma empresa deste ramo tem coordenadas ainda.
+                  {(geo?.sem_coords ?? 0) > 0
+                    ? <> Clique em <b>“Posicionar faltantes”</b> para geocodificar pelo endereço.</>
+                    : <> Mapeie o mercado e importe para Empresas primeiro.</>}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* TEMPLATES */}
           {page === "templates" && (
             <div className="space-y-4">
@@ -3656,15 +4197,16 @@ export default function App() {
           {/* TAREFAS */}
           {page === "tarefas" && (
             <div className="space-y-5">
-              {/* Cabeçalho */}
-              <div className="flex items-start justify-between gap-4 flex-wrap">
+              {/* Cabeçalho da seção (padrão DMC: eyebrow âmbar + título marcante) */}
+              <div className="flex items-center justify-between gap-4 flex-wrap">
                 <div>
-                  <h3 className="text-white font-semibold text-lg">Tarefas</h3>
+                  <p className="text-[10px] uppercase tracking-[0.3em] text-amber-400/80">ImobPro · Agenda Inteligente</p>
+                  <h2 className="text-2xl font-bold text-white mt-1">Tarefas</h2>
                   <p className="text-slate-400 text-sm mt-1">Agenda inteligente das atividades internas: visualize por dia, semana, mês ou lista, filtre por responsável, status e prioridade. Clique num dia para criar e arraste uma tarefa para reagendá-la.</p>
                 </div>
                 <button onClick={openNovaTarefa}
-                  className="px-4 py-2.5 tech-button rounded-xl text-white text-sm font-medium flex items-center gap-2">
-                  <Icon name="plus" size={14} /> Nova tarefa
+                  className="tech-button rounded-xl px-4 py-2.5 text-sm font-bold flex items-center gap-2">
+                  <Icon name="plus" size={16} /> Nova tarefa
                 </button>
               </div>
 
@@ -3813,10 +4355,22 @@ export default function App() {
 
                 {campanhaResultado && (
                   <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-4 text-sm text-emerald-100">
+                    {campanhaResultado.agendado ? (
+                      <>
+                        Campanha iniciada em segundo plano: enviando {campanhaResultado.validos} e-mail(s),
+                        1 a cada {campanhaResultado.intervalo_segundos}s
+                        {campanhaResultado.tempo_estimado_segundos ? ` (≈ ${Math.ceil(campanhaResultado.tempo_estimado_segundos / 60)} min)` : ""}.
+                        {campanhaResultado.sem_email ? ` ${campanhaResultado.sem_email} sem e-mail ignorado(s).` : ""}
+                        {" "}Acompanhe o progresso na lista de Campanhas.
+                      </>
+                    ) : (
+                      <>
                     Disparo concluído: {campanhaResultado.enviados}/{campanhaResultado.total} enviados
                     {campanhaResultado.media ? " com mídia/anexo" : ""}
                     {campanhaResultado.sem_email ? ` · ${campanhaResultado.sem_email} sem e-mail` : ""}
                     {campanhaResultado.erros ? ` · ${campanhaResultado.erros} com erro` : ""}.
+                      </>
+                    )}
                     {Array.isArray(campanhaResultado.erros_detalhes) && campanhaResultado.erros_detalhes.length > 0 && (
                       <div className="mt-3 space-y-2 text-xs text-emerald-50/90">
                         {campanhaResultado.erros_detalhes.map((item, idx) => (
@@ -3832,8 +4386,8 @@ export default function App() {
                   </div>
                 )}
 
-                <div className="grid grid-cols-1 xl:grid-cols-[1.15fr_0.85fr] gap-5">
-                  <div className="space-y-4">
+                <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)] gap-5">
+                  <div className="space-y-4 min-w-0">
                     <div className="rounded-2xl border border-white/6 bg-white/[0.03] p-4">
                       <div className="flex items-center justify-between gap-3 flex-wrap">
                         <div>
@@ -3971,15 +4525,50 @@ export default function App() {
                       </div>
 
                       {campanhaCanal === "email" && (
-                        <div className="mt-4">
-                          <label className="text-slate-400 text-sm block mb-1.5">Assunto do e-mail</label>
-                          <input
-                            value={campanhaAssunto}
-                            onChange={e => setCampanhaAssunto(e.target.value)}
-                            placeholder="Ex: Proposta de parceria - {{empresa}}"
-                            className="w-full tech-input rounded-xl px-3 py-2.5 text-sm"
-                          />
-                        </div>
+                        <>
+                          <div className="mt-4">
+                            <label className="text-slate-400 text-sm block mb-1.5">Assunto do e-mail</label>
+                            <input
+                              ref={campanhaAssuntoRef}
+                              value={campanhaAssunto}
+                              onChange={e => setCampanhaAssunto(e.target.value)}
+                              placeholder="Ex: Proposta de parceria - {{empresa}}"
+                              className="w-full tech-input rounded-xl px-3 py-2.5 text-sm"
+                            />
+                            <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                              <span className="text-[11px] text-slate-500">Inserir:</span>
+                              <button type="button" onClick={() => inserirVariavel(campanhaAssuntoRef, campanhaAssunto, setCampanhaAssunto, "{{empresa}}")}
+                                className="px-2.5 py-1 rounded-lg text-[11px] border border-[#00e7fc]/25 text-[#00e7fc] hover:bg-[#00e7fc]/10 transition-colors">+ Nome da empresa</button>
+                              <button type="button" onClick={() => inserirVariavel(campanhaAssuntoRef, campanhaAssunto, setCampanhaAssunto, "{{nome}}")}
+                                className="px-2.5 py-1 rounded-lg text-[11px] border border-white/10 text-slate-300 hover:bg-white/5 hover:text-white transition-colors">+ Nome do contato</button>
+                            </div>
+                          </div>
+                          <div className="mt-4">
+                            <label className="text-slate-400 text-sm block mb-1.5">Intervalo entre os e-mails (segundos)</label>
+                            <input
+                              type="number"
+                              min="0"
+                              max="3600"
+                              step="1"
+                              value={campanhaIntervalo}
+                              onChange={e => setCampanhaIntervalo(e.target.value)}
+                              placeholder="3"
+                              className="w-full tech-input rounded-xl px-3 py-2.5 text-sm"
+                            />
+                            <p className="text-[11px] text-slate-500 mt-2">
+                              Tempo de espera entre um envio e o próximo. Ex.: <span className="text-slate-300">30</span> = um e-mail a cada 30s.
+                              {(() => {
+                                const n = Math.max(0, Number(campanhaIntervalo) || 0);
+                                const qtd = campanhaSelectedIds.length;
+                                if (n > 0 && qtd > 1) {
+                                  const min = Math.ceil(((qtd - 1) * n) / 60);
+                                  return <> {qtd} selecionados ≈ <span className="text-slate-300">{min} min</span> no total.</>;
+                                }
+                                return null;
+                              })()}
+                            </p>
+                          </div>
+                        </>
                       )}
 
                       <div className="mt-4">
@@ -4004,21 +4593,58 @@ export default function App() {
 
                       <div className="mt-4">
                         <label className="text-slate-400 text-sm block mb-1.5">Mensagem</label>
+                        <div className="flex flex-wrap items-center gap-1.5 mb-2">
+                          <span className="text-[11px] text-slate-500">Inserir:</span>
+                          <button type="button" onClick={() => inserirVariavel(campanhaMensagemRef, campanhaMensagem, setCampanhaMensagem, "{{empresa}}")}
+                            className="px-2.5 py-1 rounded-lg text-[11px] border border-[#00e7fc]/25 text-[#00e7fc] hover:bg-[#00e7fc]/10 transition-colors">+ Nome da empresa</button>
+                          <button type="button" onClick={() => inserirVariavel(campanhaMensagemRef, campanhaMensagem, setCampanhaMensagem, "{{nome}}")}
+                            className="px-2.5 py-1 rounded-lg text-[11px] border border-white/10 text-slate-300 hover:bg-white/5 hover:text-white transition-colors">+ Nome do contato</button>
+                        </div>
                         <textarea
+                          ref={campanhaMensagemRef}
                           value={campanhaMensagem}
                           onChange={e => setCampanhaMensagem(e.target.value)}
-                          placeholder="Digite a mensagem que vai ser enviada..."
+                          placeholder="Ex: Olá {{nome}}, somos parceiros e queremos falar com a {{empresa}}..."
                           rows={8}
                           className="w-full tech-input rounded-xl px-3 py-2.5 text-sm resize-none"
                         />
                         <p className="text-[11px] text-slate-500 mt-2">
-                          Use <span className="text-slate-300">{"{{empresa}}"}</span> para personalizar o nome da empresa.
+                          As variáveis viram o dado real de cada destinatário no envio: <span className="text-slate-300">{"{{empresa}}"}</span> = nome da empresa,
+                          {" "}<span className="text-slate-300">{"{{nome}}"}</span> = nome do contato.
                         </p>
                       </div>
+
+                      {campanhaCanal === "email" && (
+                        <div className="mt-4 rounded-2xl border border-[#00e7fc]/15 bg-[#00e7fc]/[0.04] p-3">
+                          <label className="text-slate-300 text-sm font-medium mb-1.5 flex items-center gap-1.5">
+                            <Icon name="mail" size={14} /> Enviar e-mail de teste
+                          </label>
+                          <div className="flex flex-col sm:flex-row gap-2">
+                            <input
+                              type="email"
+                              value={emailTeste}
+                              onChange={e => setEmailTeste(e.target.value)}
+                              placeholder="seu-email@exemplo.com"
+                              className="flex-1 min-w-0 tech-input rounded-xl px-3 py-2.5 text-sm"
+                            />
+                            <button
+                              type="button"
+                              onClick={enviarEmailTeste}
+                              disabled={enviandoTeste}
+                              className="shrink-0 px-4 py-2.5 rounded-xl text-sm font-medium border border-[#00e7fc]/30 text-[#00e7fc] hover:bg-[#00e7fc]/10 disabled:opacity-50 transition-colors flex items-center justify-center gap-1.5"
+                            >
+                              <Icon name="send" size={14} /> {enviandoTeste ? "Enviando…" : "Enviar teste"}
+                            </button>
+                          </div>
+                          <p className="text-[11px] text-slate-500 mt-2">
+                            Envia só para esse endereço, com o assunto/mensagem atuais (as variáveis viram dados de exemplo). Não cria campanha nem afeta a base.
+                          </p>
+                        </div>
+                      )}
                     </div>
                   </div>
 
-                  <div className="space-y-4">
+                  <div className="space-y-4 min-w-0">
                     <div className="rounded-2xl border border-white/6 bg-white/[0.03] p-4">
                       <p className="text-white font-semibold">
                         {campanhaCanal === "email" ? "3. Adicione um anexo" : "3. Adicione uma mídia"}
@@ -4363,11 +4989,9 @@ export default function App() {
             <label className="text-slate-400 text-sm block mb-1.5">Tipo</label>
             <select value={newEmpresa.tipo} onChange={e => setNewEmpresa(p => ({ ...p, tipo: e.target.value }))}
               className="w-full tech-input rounded-xl px-3 py-2 text-white text-sm">
-              <option value="incorporadora">Incorporadora</option>
-              <option value="construtora">Construtora</option>
-              <option value="imobiliaria">Imobiliária</option>
-              <option value="corretora">Corretora</option>
-              <option value="outro">Outro</option>
+              {ramoTipos.map(t => (
+                <option key={t.value} value={t.value}>{t.label}</option>
+              ))}
             </select>
           </div>
           <button onClick={handleAddEmpresa} disabled={!newEmpresa.nome}

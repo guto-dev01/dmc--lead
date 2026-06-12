@@ -2,64 +2,171 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ============================================
-   ImobPro — Identidade visual dark-tech
-   Inspirada em dashboards corporativos escuros
-   ============================================ */
+/* ============================================================
+   ImobPro — Sistema de design "Precision"
+   Direção: Apple HIG / Linear / Vercel — calmo, preciso, denso.
+   A PALETA DE COR É TRAVADA (mesmos hex de sempre); o que muda é
+   tipografia, espaçamento, forma, profundidade, movimento e o
+   USO da cor (accent funcional, não decorativo).
+   ============================================================ */
 :root {
-  /* Marca / accent */
+  /* ---- Marca / accent (TRAVADO — não alterar) ---- */
   --accent-cyan: #12e7ff;
   --accent-green: #00ff6a;
   --accent-amber: #f59e0b;
   --accent-gradient: linear-gradient(135deg, #12e7ff, #00ff6a);
 
-  /* Tema escuro — fundo grafite/teal */
+  /* ---- Tema escuro — fundo grafite/teal (TRAVADO) ---- */
   --background: #071417;
   --background-muted: #0e2528;
   --background-card: rgba(13, 36, 39, 0.72);
   --foreground: #ffffff;
   --foreground-muted: #c9e9ee;
 
-  /* Bordas neon */
+  /* ---- Bordas neon (TRAVADO) ---- */
   --border-neon: rgba(18, 231, 255, 0.14);
 
-  /* Semânticas */
+  /* ---- Semânticas (TRAVADO) ---- */
   --danger: #ef4444;
   --warning: #f59e0b;
   --success: #10b981;
   --info: #3b82f6;
+
+  /* ============================================================
+     NOVOS TOKENS (não-cor) — a linguagem "Precision"
+     ============================================================ */
+
+  /* Tipografia */
+  --font-sans: 'Geist', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, 'SF Mono', 'JetBrains Mono', monospace;
+
+  /* Escala tipográfica (precisa, calma) */
+  --text-2xs: 0.6875rem;  /* 11px */
+  --text-xs:  0.75rem;    /* 12px */
+  --text-sm:  0.8125rem;  /* 13px */
+  --text-base:0.9375rem;  /* 15px */
+  --text-md:  1.0625rem;  /* 17px */
+  --text-lg:  1.3125rem;  /* 21px */
+  --text-xl:  1.75rem;    /* 28px */
+  --text-2xl: 2.25rem;    /* 36px */
+  --text-3xl: 3rem;       /* 48px */
+
+  --tracking-tight: -0.022em;
+  --tracking-tighter: -0.035em;
+  --tracking-wide: 0.02em;
+  --tracking-eyebrow: 0.14em;
+
+  /* Superfícies neutras derivadas da paleta (sem cor nova) */
+  --surface-1: rgba(255, 255, 255, 0.022);
+  --surface-2: rgba(255, 255, 255, 0.045);
+  --surface-3: rgba(255, 255, 255, 0.07);
+  --hairline: rgba(255, 255, 255, 0.08);
+  --hairline-strong: rgba(255, 255, 255, 0.12);
+
+  /* Raios refinados */
+  --radius-xs: 7px;
+  --radius-sm: 10px;
+  --radius-md: 13px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+  --radius-full: 999px;
+
+  /* Sombras suaves de baixa opacidade (profundidade, não glow) */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.28);
+  --shadow-md: 0 8px 24px -8px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 24px 60px -24px rgba(0, 0, 0, 0.6);
+
+  /* Accent como ring funcional (foco/seleção) — mesma cor travada */
+  --ring-accent: 0 0 0 3px rgba(18, 231, 255, 0.22);
+  --ring-accent-soft: 0 0 0 3px rgba(18, 231, 255, 0.10);
+
+  /* Movimento */
+  --ease-spring: cubic-bezier(0.2, 0.85, 0.25, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 0.14s;
+  --dur: 0.22s;
+  --dur-slow: 0.4s;
 }
 
 * { box-sizing: border-box; }
+
 html {
-  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  font-family: var(--font-sans);
+  font-feature-settings: "ss01", "cv01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
+
 body {
   margin: 0;
   background: var(--background);
   color: var(--foreground);
+  font-size: var(--text-base);
+  line-height: 1.5;
+  letter-spacing: -0.005em;
+  /* Glows radiais MUITO mais discretos — ambiente calmo */
   background-image:
-    radial-gradient(900px circle at 8% 0%, rgba(18, 231, 255, 0.08), transparent 42%),
-    radial-gradient(800px circle at 100% 0%, rgba(0, 255, 106, 0.06), transparent 40%),
-    linear-gradient(180deg, rgba(255,255,255,0.02), transparent 16%);
+    radial-gradient(1100px circle at 12% -8%, rgba(18, 231, 255, 0.05), transparent 45%),
+    radial-gradient(900px circle at 100% 0%, rgba(0, 255, 106, 0.035), transparent 42%);
   background-attachment: fixed;
 }
 
+/* Grade de fundo reduzida ao mínimo — quase imperceptível */
 body::before {
   content: "";
   position: fixed;
   inset: 0;
   pointer-events: none;
+  z-index: 0;
   background:
-    linear-gradient(to right, rgba(255,255,255,0.02) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(255,255,255,0.02) 1px, transparent 1px);
-  background-size: 72px 72px;
-  mask-image: linear-gradient(180deg, rgba(0,0,0,0.28), transparent 70%);
-  opacity: 0.14;
+    linear-gradient(to right, rgba(255, 255, 255, 0.015) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
+  background-size: 96px 96px;
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, rgba(0, 0, 0, 0.5), transparent 75%);
+  opacity: 0.5;
 }
 
-/* Texto com gradiente neon */
+/* ============================================================
+   LEAFLET — conter z-index interno (panes/controles vão até 1000)
+   para que o mapa nunca fique por cima de modais/menus
+   ============================================================ */
+.leaflet-container {
+  isolation: isolate;
+  z-index: 0;
+}
+
+/* ============================================================
+   TIPOGRAFIA — helpers de escala/estilo
+   ============================================================ */
+.display {
+  font-weight: 600;
+  letter-spacing: var(--tracking-tighter);
+  line-height: 1.02;
+}
+.title {
+  font-weight: 600;
+  letter-spacing: var(--tracking-tight);
+  line-height: 1.12;
+}
+.eyebrow {
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-eyebrow);
+  color: var(--foreground-muted);
+}
+/* Números/dados monoespaçados e alinhados (KPIs, tabelas) */
+.numeric,
+.tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  font-feature-settings: "tnum";
+}
+
+/* Texto com gradiente neon (usado com parcimônia em marca/destaque) */
 .text-gradient {
   background: var(--accent-gradient);
   -webkit-background-clip: text;
@@ -68,92 +175,176 @@ body::before {
   color: transparent;
 }
 
-/* Superfície de vidro fosco (glass) */
+/* ============================================================
+   SUPERFÍCIES — sólidas, hairline, profundidade sutil
+   (mesmos nomes de classe de antes → propaga ao app inteiro)
+   ============================================================ */
 .glass {
   background: var(--background-card);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  border: 1px solid var(--border-neon);
+  backdrop-filter: blur(20px) saturate(1.1);
+  -webkit-backdrop-filter: blur(20px) saturate(1.1);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
 }
-
-/* Efeito glow neon */
-.glow-cyan { box-shadow: 0 0 22px rgba(0, 231, 252, 0.35); }
-.glow-green { box-shadow: 0 0 22px rgba(0, 255, 77, 0.30); }
-
-/* Botão neon padrão */
-.btn-neon {
-  background: var(--accent-gradient);
-  color: #062528;
-  font-weight: 600;
-  transition: box-shadow 0.2s ease, opacity 0.2s ease;
-}
-.btn-neon:hover { box-shadow: 0 0 20px rgba(0, 231, 252, 0.45); }
-.btn-neon:disabled { opacity: 0.5; box-shadow: none; }
 
 .surface {
-  background: linear-gradient(180deg, rgba(18, 33, 36, 0.92), rgba(8, 25, 27, 0.88));
-  border: 1px solid rgba(18, 231, 255, 0.10);
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 60%),
+    var(--background-muted);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
 }
 
 .surface-soft {
-  background: rgba(10, 24, 27, 0.72);
-  border: 1px solid rgba(18, 231, 255, 0.08);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  background: var(--surface-1);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
 }
 
 .surface-strong {
-  background: linear-gradient(180deg, rgba(13, 38, 41, 0.95), rgba(8, 25, 27, 0.95));
-  border: 1px solid rgba(18, 231, 255, 0.10);
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.28);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 55%),
+    var(--background-muted);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
 }
 
-.tech-input {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(18, 231, 255, 0.12);
-  color: #fff;
-  outline: none;
-  transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
+/* Glow herdado → agora um realce sutil (anel + leve bloom) */
+.glow-cyan {
+  box-shadow: 0 0 0 1px rgba(18, 231, 255, 0.18), 0 6px 22px -10px rgba(18, 231, 255, 0.35);
+}
+.glow-green {
+  box-shadow: 0 0 0 1px rgba(0, 255, 106, 0.16), 0 6px 22px -10px rgba(0, 255, 106, 0.30);
 }
 
-.tech-input::placeholder {
-  color: rgba(201, 233, 238, 0.35);
-}
+/* Linha-hairline reutilizável */
+.hairline { border-color: var(--hairline) !important; }
 
-.tech-input:focus {
-  border-color: rgba(18, 231, 255, 0.35);
-  box-shadow: 0 0 0 3px rgba(18, 231, 255, 0.08);
-}
-
+/* ============================================================
+   BOTÕES
+   ============================================================ */
+.btn-neon,
 .tech-button {
-  background: linear-gradient(135deg, #12e7ff, #00ff6a);
-  color: #042226;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-  transition: transform .15s ease, box-shadow .15s ease, opacity .15s ease;
+  background: var(--accent-gradient);
+  color: #062528;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xs);
+  transition: transform var(--dur-fast) var(--ease-spring),
+              box-shadow var(--dur) var(--ease-out),
+              opacity var(--dur-fast) ease, filter var(--dur-fast) ease;
 }
-
+.btn-neon:hover,
 .tech-button:hover {
   transform: translateY(-1px);
-  box-shadow: 0 10px 26px rgba(18, 231, 255, 0.22);
+  filter: brightness(1.04);
+  box-shadow: 0 10px 28px -10px rgba(18, 231, 255, 0.45);
+}
+.btn-neon:active,
+.tech-button:active { transform: translateY(0); filter: brightness(0.98); }
+.btn-neon:disabled,
+.tech-button:disabled { opacity: 0.5; transform: none; box-shadow: none; filter: none; cursor: not-allowed; }
+
+/* Secundário (hairline) — para propagação */
+.btn-secondary {
+  background: var(--surface-2);
+  color: var(--foreground);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-md);
+  font-weight: 500;
+  transition: background var(--dur-fast) ease, border-color var(--dur-fast) ease, transform var(--dur-fast) var(--ease-spring);
+}
+.btn-secondary:hover { background: var(--surface-3); border-color: rgba(18, 231, 255, 0.25); }
+.btn-secondary:active { transform: translateY(0.5px); }
+
+/* Ghost */
+.btn-ghost {
+  background: transparent;
+  color: var(--foreground-muted);
+  border-radius: var(--radius-md);
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
+}
+.btn-ghost:hover { background: var(--surface-2); color: var(--foreground); }
+
+/* ============================================================
+   FORMULÁRIOS
+   ============================================================ */
+.tech-input {
+  background: var(--surface-1);
+  border: 1px solid var(--hairline-strong);
+  color: #fff;
+  border-radius: var(--radius-md);
+  outline: none;
+  transition: border-color var(--dur-fast) ease, box-shadow var(--dur-fast) ease, background var(--dur-fast) ease;
+}
+.tech-input::placeholder { color: rgba(201, 233, 238, 0.32); }
+.tech-input:hover { border-color: rgba(255, 255, 255, 0.16); }
+.tech-input:focus {
+  border-color: rgba(18, 231, 255, 0.5);
+  background: var(--surface-2);
+  box-shadow: var(--ring-accent-soft);
 }
 
-.tech-button:disabled {
-  opacity: 0.55;
-  transform: none;
-  box-shadow: none;
+/* ============================================================
+   FOCO ACESSÍVEL — ring accent só em foco por teclado
+   ============================================================ */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--ring-accent);
+  border-radius: var(--radius-sm);
+}
+.tech-input:focus-visible { box-shadow: var(--ring-accent-soft); }
+
+/* ============================================================
+   MOVIMENTO — reveal de entrada escalonado
+   ============================================================ */
+@keyframes reveal {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.reveal { animation: reveal var(--dur-slow) var(--ease-out) both; }
+.fade-in { animation: fade-in var(--dur) var(--ease-out) both; }
+
+/* Stagger: filhos diretos entram em cascata */
+.reveal-stagger > * { animation: reveal var(--dur-slow) var(--ease-out) both; }
+.reveal-stagger > *:nth-child(1) { animation-delay: 0.02s; }
+.reveal-stagger > *:nth-child(2) { animation-delay: 0.06s; }
+.reveal-stagger > *:nth-child(3) { animation-delay: 0.10s; }
+.reveal-stagger > *:nth-child(4) { animation-delay: 0.14s; }
+.reveal-stagger > *:nth-child(5) { animation-delay: 0.18s; }
+.reveal-stagger > *:nth-child(6) { animation-delay: 0.22s; }
+.reveal-stagger > *:nth-child(7) { animation-delay: 0.26s; }
+.reveal-stagger > *:nth-child(8) { animation-delay: 0.30s; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
-/* Scrollbar neon */
-::-webkit-scrollbar { width: 10px; height: 10px; }
+/* ============================================================
+   SCROLLBAR — fina e discreta
+   ============================================================ */
+::-webkit-scrollbar { width: 11px; height: 11px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: rgba(18, 231, 255, 0.22);
-  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-full);
+  border: 3px solid transparent;
+  background-clip: padding-box;
 }
-::-webkit-scrollbar-thumb:hover { background: rgba(18, 231, 255, 0.42); }
+::-webkit-scrollbar-thumb:hover { background: rgba(18, 231, 255, 0.32); background-clip: padding-box; }
 
-::selection { background: rgba(18, 231, 255, 0.30); color: #ffffff; }
+* { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.12) transparent; }
+
+::selection { background: rgba(18, 231, 255, 0.28); color: #ffffff; }

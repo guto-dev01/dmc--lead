@@ -40,6 +40,8 @@ async def _ensure_indexes(db) -> None:
     )
     await db.empresas.create_index([("conta_id", ASCENDING)])
     await db.empresas.create_index([("tipo", ASCENDING)])
+    await db.empresas.create_index([("ramo", ASCENDING)])
+    await db.empresas.create_index([("conta_id", ASCENDING), ("ramo", ASCENDING)])
     await db.empresas.create_index([("eixo", ASCENDING)])
     await db.empresas.create_index([("status_prospeccao", ASCENDING)])
     await db.empresas.create_index([("conta_id", ASCENDING), ("score", DESCENDING), ("created_at", DESCENDING)])
@@ -146,6 +148,25 @@ TEMPLATES_SEED = [
     ),
 ]
 
+# Templates do ramo funerário (semeados de forma idempotente para todas as contas).
+TEMPLATES_FUNERARIA_SEED = [
+    (
+        "Apresentação Inicial (Funerária)", "prospecção",
+        "Olá, {{nome}}! Tudo bem?\n\nSou {{meu_nome}} e entrei em contato porque identificamos que a {{empresa}} atua com serviços funerários e de assistência na sua região.\n\nDesenvolvemos soluções para gestão de famílias atendidas, contratos de plano funerário e relacionamento com parceiros (cemitérios, crematórios e floriculturas). Posso compartilhar como ajudamos funerárias a organizar a captação e o pós-atendimento?\n\nFico à disposição.",
+        ["nome", "meu_nome", "empresa"],
+    ),
+    (
+        "Follow-up (Funerária)", "follow-up",
+        "Olá, {{nome}}!\n\nPassando para retomar nosso contato sobre as soluções de gestão para o setor funerário.\n\nVocê teve a oportunidade de avaliar? Posso esclarecer qualquer dúvida.",
+        ["nome"],
+    ),
+    (
+        "Proposta Comercial (Funerária)", "comercial",
+        "Olá, {{nome}}!\n\nConforme nossa conversa, segue uma breve apresentação das nossas soluções para a {{empresa}}:\n\n✅ Gestão de planos funerários e renovações\n✅ Cadastro e histórico de famílias atendidas\n✅ Comunicação automatizada (WhatsApp) com clientes e parceiros\n✅ Dashboard com dados da Receita Federal\n\nPosso agendar uma demonstração de 15 minutos? Qual o melhor horário para você?",
+        ["nome", "empresa"],
+    ),
+]
+
 
 async def _conta_principal_id(db):
     """conta_id da conta principal (dono cujo e-mail é conta_principal_email).
@@ -172,7 +193,7 @@ async def _seed_inicial(db) -> None:
         for nome, tipo, regiao, bairro, observacoes, tags in EMPRESAS_SEED:
             doc = {
                 "_id": _seed_id("empresa", nome), "conta_id": conta_id,
-                "nome": nome, "tipo": tipo, "regiao": regiao, "bairro": bairro,
+                "nome": nome, "tipo": tipo, "ramo": "imobiliaria", "regiao": regiao, "bairro": bairro,
                 "municipio": "São Paulo", "uf": "SP",
                 "observacoes": observacoes, "tags": tags,
                 "score": 0, "status_prospeccao": "nao_iniciado", "prioridade": "normal",
@@ -187,12 +208,36 @@ async def _seed_inicial(db) -> None:
             doc = {
                 "_id": _seed_id("template", nome), "conta_id": conta_id,
                 "nome": nome, "categoria": categoria, "conteudo": conteudo,
-                "variaveis": variaveis, "ativo": True, "created_at": ts,
+                "variaveis": variaveis, "ativo": True, "ramo": "imobiliaria", "created_at": ts,
             }
             await db.templates.update_one({"_id": doc["_id"]}, {"$setOnInsert": doc}, upsert=True)
+
+    # Templates de funerária: semeados sempre (idempotente por _id), inclusive em
+    # contas já existentes, para que o ramo funerária funcione de imediato.
+    ts = now()
+    for nome, categoria, conteudo, variaveis in TEMPLATES_FUNERARIA_SEED:
+        doc = {
+            "_id": _seed_id("template", nome), "conta_id": conta_id,
+            "nome": nome, "categoria": categoria, "conteudo": conteudo,
+            "variaveis": variaveis, "ativo": True, "ramo": "funeraria", "created_at": ts,
+        }
+        await db.templates.update_one({"_id": doc["_id"]}, {"$setOnInsert": doc}, upsert=True)
+
+
+async def _backfill_ramo(db) -> None:
+    """Marca os registros antigos (sem `ramo`) com o ramo padrão, para que o
+    filtro por ramo do app funcione. Tudo que existe hoje é imobiliário; o módulo
+    DMC (intermediação institucional) é o ramo 'corporativa'."""
+    sem_ramo = {"ramo": {"$exists": False}}
+    await db.empresas.update_many(sem_ramo, {"$set": {"ramo": "imobiliaria"}})
+    await db.mercado_itens.update_many(sem_ramo, {"$set": {"ramo": "imobiliaria"}})
+    await db.templates.update_many(sem_ramo, {"$set": {"ramo": "imobiliaria"}})
+    await db.dmc_empreendimentos.update_many(sem_ramo, {"$set": {"ramo": "corporativa"}})
+    await db.dmc_parceiros.update_many(sem_ramo, {"$set": {"ramo": "corporativa"}})
 
 
 async def ensure_schema() -> None:
     db = get_db()
     await _ensure_indexes(db)
+    await _backfill_ramo(db)
     await _seed_inicial(db)
