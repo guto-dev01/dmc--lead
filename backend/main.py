@@ -84,4 +84,8 @@ async def root():
         "smtp_host": bool(settings.smtp_host),
         "smtp_from": bool(settings.smtp_from),
         "dono_principal_email": bool((settings.dono_principal_email or settings.smtp_from or "").strip()),
+        # URLs públicas (não são segredo) — usadas nos links de aprovação/reset:
+        "backend_public_url": settings.backend_public_url,
+        "app_public_url": settings.app_public_url or None,
+        "frontend_origin": os.environ.get("FRONTEND_ORIGIN") or None,
     }
