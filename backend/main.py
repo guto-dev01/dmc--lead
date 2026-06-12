@@ -72,4 +72,16 @@ app.include_router(equipes.router, prefix="/api/equipes", tags=["Equipes"], depe
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "sistema": "ImobPro", "versao": "1.0.0"}
+    # Diagnóstico de readiness (sem expor segredos): ajuda a saber, em produção,
+    # se o SMTP e o e-mail do dono foram lidos do ambiente.
+    from services import mailer
+    from database import settings
+    return {
+        "status": "ok",
+        "sistema": "ImobPro",
+        "versao": "1.0.0",
+        "smtp": mailer.smtp_configurado(),
+        "smtp_host": bool(settings.smtp_host),
+        "smtp_from": bool(settings.smtp_from),
+        "dono_principal_email": bool((settings.dono_principal_email or settings.smtp_from or "").strip()),
+    }
