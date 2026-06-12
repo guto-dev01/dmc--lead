@@ -243,8 +243,11 @@ async def register(payload: RegisterRequest):
     }
     await db.usuarios.insert_one(doc)
 
-    # Envia a solicitação de aprovação para o dono principal.
+    # Envia a solicitação de aprovação para o dono principal (best-effort): se o
+    # e-mail falhar, o cadastro NÃO é perdido — o usuário fica "pendente" e o dono
+    # pode aprovar depois. Isso evita que uma falha de SMTP/URL bloqueie o cadastro.
     destinatario = _dono_principal_email()
+    email_enviado = False
     try:
         if not destinatario:
             raise RuntimeError("E-mail do dono principal não configurado.")
@@ -259,18 +262,16 @@ async def register(payload: RegisterRequest):
         await asyncio.to_thread(
             mailer.enviar_email, destinatario, "Nova solicitação de cadastro no sistema", corpo
         )
+        email_enviado = True
     except Exception:
-        # Não deixa um cadastro "órfão" se a solicitação não pôde ser enviada.
-        await db.usuarios.delete_one({"_id": uid})
-        raise HTTPException(
-            status_code=503,
-            detail="No momento não é possível concluir o cadastro. Tente novamente mais tarde.",
-        )
+        email_enviado = False
 
-    return {
-        "ok": True,
-        "message": "Cadastro enviado com sucesso. Aguarde a aprovação do administrador para acessar o sistema.",
-    }
+    if email_enviado:
+        msg = "Cadastro enviado com sucesso. Aguarde a aprovação do administrador para acessar o sistema."
+    else:
+        msg = ("Cadastro registrado. Não foi possível notificar o administrador por e-mail agora — "
+               "peça para ele liberar seu acesso.")
+    return {"ok": True, "message": msg, "email_enviado": email_enviado}
 
 
 # ---------------------------------------------------------------------------

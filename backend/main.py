@@ -83,6 +83,8 @@ async def root():
         "smtp": mailer.smtp_configurado(),
         "smtp_host": bool(settings.smtp_host),
         "smtp_from": bool(settings.smtp_from),
+        "smtp_user": bool(settings.smtp_user),
+        "smtp_password": bool(settings.smtp_password),
         "dono_principal_email": bool((settings.dono_principal_email or settings.smtp_from or "").strip()),
         # URLs públicas (não são segredo) — usadas nos links de aprovação/reset:
         "backend_public_url": settings.backend_public_url,
