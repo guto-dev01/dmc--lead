@@ -2,13 +2,13 @@
 
 import { useState, useEffect } from "react";
 
-const API =
+const apiBase = () =>
+  (typeof window !== "undefined" && window.ENV_API_URL) ||
   process.env.NEXT_PUBLIC_API_URL ||
-  (typeof window !== "undefined" ? window.ENV_API_URL : undefined) ||
   "http://localhost:8001";
 
 const api = async (path, opts = {}) => {
-  const r = await fetch(`${API}${path}`, {
+  const r = await fetch(`${apiBase()}${path}`, {
     headers: { "Content-Type": "application/json" },
     ...opts,
   });

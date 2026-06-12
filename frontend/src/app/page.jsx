@@ -14,9 +14,12 @@ const MapaEmpresas = dynamic(() => import("./dmc/DMCMapa"), {
   ),
 });
 
-const API =
+// Base da API resolvida em TEMPO DE CHAMADA: prefere a config de runtime
+// (window.ENV_API_URL, injetada por /runtime-config), depois a build-time, e por
+// fim o localhost. Assim a URL do backend pode mudar sem rebuildar.
+const apiBase = () =>
+  (typeof window !== "undefined" && window.ENV_API_URL) ||
   process.env.NEXT_PUBLIC_API_URL ||
-  (typeof window !== "undefined" ? window.ENV_API_URL : undefined) ||
   "http://localhost:8001";
 
 const TOKEN_KEY = "imobpro_token";
@@ -79,7 +82,7 @@ const isValidPage = (value) => {
 const api = async (path, opts = {}) => {
   const { auth = true, headers = {}, ...fetchOpts } = opts;
   const token = auth ? getStoredToken() : "";
-  const r = await fetch(`${API}${path}`, {
+  const r = await fetch(`${apiBase()}${path}`, {
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -2301,7 +2304,7 @@ export default function App() {
     const token = getStoredToken();
     const form = new FormData();
     form.append("file", file);
-    const response = await fetch(`${API}/api/campanhas/upload-media`, {
+    const response = await fetch(`${apiBase()}/api/campanhas/upload-media`, {
       method: "POST",
       headers: token ? { Authorization: `Bearer ${token}` } : {},
       body: form,

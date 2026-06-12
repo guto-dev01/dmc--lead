@@ -15,7 +15,10 @@ const DMCMapa = dynamic(() => import("./DMCMapa"), {
   ),
 });
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8001";
+const apiBase = () =>
+  (typeof window !== "undefined" && window.ENV_API_URL) ||
+  process.env.NEXT_PUBLIC_API_URL ||
+  "http://localhost:8001";
 const TOKEN_KEY = "imobpro_token";
 
 const getStoredToken = () => {
@@ -25,7 +28,7 @@ const getStoredToken = () => {
 
 async function api(path, opts = {}) {
   const token = getStoredToken();
-  const r = await fetch(`${API}${path}`, {
+  const r = await fetch(`${apiBase()}${path}`, {
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),

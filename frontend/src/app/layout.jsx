@@ -10,6 +10,8 @@ export default function RootLayout({ children }) {
   return (
     <html lang="pt-BR">
       <head>
+        {/* Define window.ENV_API_URL em runtime (antes do app), a partir da var API_URL */}
+        <script src="/runtime-config" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link
