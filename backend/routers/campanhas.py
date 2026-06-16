@@ -207,6 +207,11 @@ async def _remetente_do_usuario(db, user) -> tuple[Optional[str], Optional[str]]
     if not sub or "@" not in str(sub):
         return None, None
     email = str(sub).strip()
+    # EMAIL_FROM_NOME (quando definido) fixa o nome exibido no "De:", sobrepondo
+    # o nome do perfil. Senão, usa o nome do usuário logado.
+    override = (settings.email_from_nome or "").strip()
+    if override:
+        return email, override
     usuario = await db.usuarios.find_one({"email": email.lower()}, {"nome": 1})
     nome = (usuario.get("nome") if usuario else None) or None
     return email, nome

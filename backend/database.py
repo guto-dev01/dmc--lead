@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     # Remetente verificado no provedor HTTP (Resend exige domínio verificado;
     # Brevo, um remetente verificado). Se vazio, usa o SMTP_FROM.
     email_from: str = ""
+    # Nome exibido no "De:" das campanhas. Quando definido, sobrepõe o nome do
+    # usuário logado (campo `nome`). Se vazio, usa o nome do usuário.
+    email_from_nome: str = ""
 
     class Config:
         env_file = ".env"
