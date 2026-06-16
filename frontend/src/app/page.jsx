@@ -1565,6 +1565,7 @@ export default function App() {
   const [enviandoTeste, setEnviandoTeste] = useState(false);
   const campanhaAssuntoRef = useRef(null);
   const campanhaMensagemRef = useRef(null);
+  const templateAssuntoRef = useRef(null);
   const templateConteudoRef = useRef(null);
   // Insere uma variável (ex.: {{empresa}}) na posição do cursor do campo.
   const inserirVariavel = (ref, valor, setter, token) => {
@@ -1647,7 +1648,7 @@ export default function App() {
   const [showNewModal, setShowNewModal] = useState(false);
   const [discoveringAllWA, setDiscoveringAllWA] = useState(false);
   const [discoveringAllEmail, setDiscoveringAllEmail] = useState(false);
-  const [newTemplate, setNewTemplate] = useState({ nome: "", categoria: "", conteudo: "" });
+  const [newTemplate, setNewTemplate] = useState({ nome: "", categoria: "", assunto: "", conteudo: "" });
   const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [editingTemplateId, setEditingTemplateId] = useState(null);
   const [enriching, setEnriching] = useState(false);
@@ -2279,6 +2280,9 @@ export default function App() {
     if (tmpl?.conteudo) {
       setCampanhaMensagem(tmpl.conteudo);
     }
+    if (tmpl?.assunto) {
+      setCampanhaAssunto(tmpl.assunto);
+    }
   }, [templates]);
 
   const handleCampanhaMedia = useCallback(async (file) => {
@@ -2681,20 +2685,20 @@ export default function App() {
 
   const openNewTemplate = () => {
     setEditingTemplateId(null);
-    setNewTemplate({ nome: "", categoria: "", conteudo: "" });
+    setNewTemplate({ nome: "", categoria: "", assunto: "", conteudo: "" });
     setShowTemplateModal(true);
   };
 
   const openEditTemplate = (t) => {
     setEditingTemplateId(t.id);
-    setNewTemplate({ nome: t.nome || "", categoria: t.categoria || "", conteudo: t.conteudo || "" });
+    setNewTemplate({ nome: t.nome || "", categoria: t.categoria || "", assunto: t.assunto || "", conteudo: t.conteudo || "" });
     setShowTemplateModal(true);
   };
 
   const handleSaveTemplate = async () => {
     try {
       const variaveis = [...new Set(
-        [...(newTemplate.conteudo || "").matchAll(/\{\{\s*([\w-]+)\s*\}\}/g)].map(m => m[1])
+        [...(`${newTemplate.assunto || ""} ${newTemplate.conteudo || ""}`).matchAll(/\{\{\s*([\w-]+)\s*\}\}/g)].map(m => m[1])
       )];
       const payload = JSON.stringify({ ...newTemplate, variaveis });
       if (editingTemplateId) {
@@ -2704,7 +2708,7 @@ export default function App() {
       }
       setShowTemplateModal(false);
       setEditingTemplateId(null);
-      setNewTemplate({ nome: "", categoria: "", conteudo: "" });
+      setNewTemplate({ nome: "", categoria: "", assunto: "", conteudo: "" });
       loadTemplates();
     } catch (e) {
       alert("Erro: " + e.message);
@@ -5019,6 +5023,19 @@ export default function App() {
             <input value={newTemplate.categoria} onChange={e => setNewTemplate(p => ({ ...p, categoria: e.target.value }))}
               placeholder="prospecção, follow-up, comercial..."
               className="w-full tech-input rounded-xl px-3 py-2 text-white text-sm" />
+          </div>
+          <div>
+            <label className="text-slate-400 text-sm block mb-1.5">Assunto do e-mail <span className="text-slate-600">(usado nas campanhas por e-mail)</span></label>
+            <input ref={templateAssuntoRef} value={newTemplate.assunto} onChange={e => setNewTemplate(p => ({ ...p, assunto: e.target.value }))}
+              placeholder="Ex: Proposta de parceria - {{empresa}}"
+              className="w-full tech-input rounded-xl px-3 py-2 text-white text-sm" />
+            <div className="flex flex-wrap items-center gap-1.5 mt-2">
+              <span className="text-[11px] text-slate-500">Inserir:</span>
+              <button type="button" onClick={() => inserirVariavel(templateAssuntoRef, newTemplate.assunto, (v) => setNewTemplate(p => ({ ...p, assunto: v })), "{{empresa}}")}
+                className="px-2.5 py-1 rounded-lg text-[11px] border border-[#00e7fc]/25 text-[#00e7fc] hover:bg-[#00e7fc]/10 transition-colors">+ Nome da empresa</button>
+              <button type="button" onClick={() => inserirVariavel(templateAssuntoRef, newTemplate.assunto, (v) => setNewTemplate(p => ({ ...p, assunto: v })), "{{nome}}")}
+                className="px-2.5 py-1 rounded-lg text-[11px] border border-white/10 text-slate-300 hover:bg-white/5 hover:text-white transition-colors">+ Nome do contato</button>
+            </div>
           </div>
           <div>
             <label className="text-slate-400 text-sm block mb-1.5">Conteúdo</label>

@@ -22,6 +22,7 @@ async def listar_templates(ramo: Optional[str] = None, conta_id: str = Depends(c
 class TemplateCreate(BaseModel):
     nome: str
     categoria: Optional[str] = None
+    assunto: Optional[str] = None
     conteudo: str
     ramo: Optional[str] = None
     variaveis: Optional[List[str]] = []
@@ -31,7 +32,7 @@ async def criar_template(body: TemplateCreate, conta_id: str = Depends(conta_atu
     db = get_db()
     doc = {
         "_id": new_id(), "conta_id": conta_id, "nome": body.nome, "categoria": body.categoria,
-        "conteudo": body.conteudo, "variaveis": body.variaveis or [], "ativo": True,
+        "assunto": body.assunto, "conteudo": body.conteudo, "variaveis": body.variaveis or [], "ativo": True,
         "ramo": normalizar_ramo(body.ramo) if body.ramo else None,
     }
     await db.templates.insert_one(doc)
@@ -40,6 +41,7 @@ async def criar_template(body: TemplateCreate, conta_id: str = Depends(conta_atu
 class TemplateUpdate(BaseModel):
     nome: Optional[str] = None
     categoria: Optional[str] = None
+    assunto: Optional[str] = None
     conteudo: Optional[str] = None
     variaveis: Optional[List[str]] = None
 
