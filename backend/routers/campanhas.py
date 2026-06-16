@@ -16,6 +16,7 @@ from database import settings, get_db, new_id, now, serialize
 from routers.whatsapp import normalizar_numero
 from services.auth import require_auth, conta_atual
 from services.atividades import registrar
+from services import mailer
 
 
 def _autor(user) -> Optional[str]:
@@ -171,7 +172,8 @@ async def get_media(filename: str):
 
 
 def _smtp_configurado() -> bool:
-    return bool(settings.smtp_host and settings.smtp_from)
+    """True se há algum caminho de envio de e-mail (API HTTP ou SMTP)."""
+    return mailer.email_configurado()
 
 
 def _smtp_enviar(
@@ -183,54 +185,16 @@ def _smtp_enviar(
     remetente_email: Optional[str] = None,
     remetente_nome: Optional[str] = None,
 ):
-    """Envia um e-mail via SMTP. Bloqueante — chamar via asyncio.to_thread.
+    """Envia um e-mail (API HTTP ou SMTP). Bloqueante — chamar via asyncio.to_thread.
 
-    Quando `remetente_email` é informado (e-mail do usuário logado), ele vira o
-    "De:" e o "Responder-Para:" do e-mail. O envelope (MAIL FROM) continua sendo
-    o SMTP_FROM autenticado, para não quebrar SPF/DKIM e a entrega.
+    Delega ao núcleo em ``services.mailer``: quando há provedor HTTP (Resend/Brevo)
+    configurado, envia pela API HTTPS; senão, via SMTP. ``remetente_email`` (do
+    usuário logado) vira o Reply-To quando difere do remetente verificado.
     """
-    if not _smtp_configurado():
-        raise RuntimeError("SMTP não configurado (defina SMTP_HOST e SMTP_FROM).")
-
-    msg = EmailMessage()
-    de_email = (remetente_email or "").strip() or settings.smtp_from
-    de_nome = (remetente_nome or "").strip() or settings.smtp_from_nome
-    remetente = f"{de_nome} <{de_email}>" if de_nome else de_email
-    msg["From"] = remetente
-    if remetente_email and remetente_email.strip().lower() != (settings.smtp_from or "").strip().lower():
-        msg["Reply-To"] = remetente_email.strip()
-    msg["To"] = destinatario
-    msg["Subject"] = assunto or "(sem assunto)"
-
-    if html:
-        msg.set_content("Abra este e-mail em um leitor compatível com HTML.")
-        msg.add_alternative(corpo, subtype="html")
-    else:
-        msg.set_content(corpo)
-
-    if anexo and anexo.get("bytes"):
-        maintype, _, subtype = (anexo.get("mimetype") or "application/octet-stream").partition("/")
-        msg.add_attachment(
-            anexo["bytes"],
-            maintype=maintype or "application",
-            subtype=subtype or "octet-stream",
-            filename=anexo.get("filename") or "anexo",
-        )
-
-    if settings.smtp_port == 465:
-        server = smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=30)
-    else:
-        server = smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30)
-    try:
-        if settings.smtp_port != 465 and settings.smtp_use_tls:
-            server.starttls()
-        if settings.smtp_user:
-            server.login(settings.smtp_user, settings.smtp_password)
-        # Envelope (MAIL FROM) = SMTP_FROM autenticado, mesmo que o "De:" visível
-        # seja o e-mail do usuário logado — mantém SPF/DKIM válidos.
-        server.send_message(msg, from_addr=settings.smtp_from or None)
-    finally:
-        server.quit()
+    mailer.enviar(
+        destinatario, assunto, corpo, html=html, anexo=anexo,
+        remetente_email=remetente_email, remetente_nome=remetente_nome,
+    )
 
 
 async def _remetente_do_usuario(db, user) -> tuple[Optional[str], Optional[str]]:
@@ -672,7 +636,7 @@ async def disparo_email(body: CampanhaDisparoEmail, user=Depends(require_auth), 
     if not _smtp_configurado():
         raise HTTPException(
             status_code=400,
-            detail="Configure o SMTP (SMTP_HOST e SMTP_FROM) para disparar e-mails.",
+            detail="Configure o e-mail (RESEND_API_KEY/BREVO_API_KEY + EMAIL_FROM, ou SMTP_HOST + SMTP_FROM) para disparar e-mails.",
         )
     usar_clientes = bool(body.contato_ids)
     if not body.empresa_ids and not body.contato_ids:
@@ -793,7 +757,7 @@ async def teste_email(body: TesteEmail, user=Depends(require_auth), conta_id: st
     atuais (com as variáveis preenchidas com dados de exemplo). Serve para conferir
     o SMTP e como o e-mail chega, sem criar campanha."""
     if not _smtp_configurado():
-        raise HTTPException(status_code=400, detail="Configure o SMTP (SMTP_HOST e SMTP_FROM) para enviar e-mails.")
+        raise HTTPException(status_code=400, detail="Configure o e-mail (RESEND_API_KEY/BREVO_API_KEY + EMAIL_FROM, ou SMTP_HOST + SMTP_FROM) para enviar e-mails.")
     para = (body.para or "").strip()
     if "@" not in para or "." not in para.split("@")[-1]:
         raise HTTPException(status_code=400, detail="Informe um e-mail de destino válido.")

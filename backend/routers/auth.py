@@ -214,7 +214,7 @@ async def register(payload: RegisterRequest):
     if await db.usuarios.find_one({"email": email}):
         raise HTTPException(status_code=409, detail="Já existe um cadastro com este e-mail.")
 
-    if not mailer.smtp_configurado():
+    if not mailer.email_configurado():
         # Sem SMTP não há como solicitar aprovação ao dono principal.
         raise HTTPException(
             status_code=503,
@@ -314,7 +314,7 @@ async def aprovar(token: str):
 
     # E-mail de confirmação ao usuário (falha aqui não invalida a aprovação).
     try:
-        if mailer.smtp_configurado():
+        if mailer.email_configurado():
             corpo = auth_emails.email_acesso_aprovado(usuario.get("nome") or "", _frontend_base())
             await asyncio.to_thread(
                 mailer.enviar_email, usuario["email"], "Seu acesso foi aprovado", corpo
@@ -371,7 +371,7 @@ async def esqueci_senha(payload: EsqueciSenhaRequest):
 
     # Caminho do admin: o login `admin` não é um Dono cadastrado, então a
     # redefinição é guardada na coleção admin_auth e enviada ao e-mail do admin.
-    if email and email == _admin_email() and mailer.smtp_configurado():
+    if email and email == _admin_email() and mailer.email_configurado():
         ts = now()
         jti = secrets.token_urlsafe(16)
         exp = int(ts.timestamp()) + RESET_TTL_SECONDS
@@ -395,7 +395,7 @@ async def esqueci_senha(payload: EsqueciSenhaRequest):
 
     # Só donos aprovados conseguem redefinir; demais casos seguem em silêncio
     # para não revelar a existência (ou o status) do e-mail.
-    if usuario and usuario.get("status") == "aprovado" and mailer.smtp_configurado():
+    if usuario and usuario.get("status") == "aprovado" and mailer.email_configurado():
         ts = now()
         jti = secrets.token_urlsafe(16)
         exp = int(ts.timestamp()) + RESET_TTL_SECONDS

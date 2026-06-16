@@ -271,10 +271,10 @@ async def criar_colaborador(body: ColaboradorCreate, user=Depends(require_auth),
     if body.equipe_id and not await db.equipes.find_one({"_id": body.equipe_id, "conta_id": conta_id}):
         raise HTTPException(status_code=404, detail="Equipe não encontrada.")
 
-    if not mailer.smtp_configurado():
+    if not mailer.email_configurado():
         raise HTTPException(
             status_code=503,
-            detail="Configure o SMTP para cadastrar colaboradores (eles recebem um e-mail para definir a senha).",
+            detail="Configure o e-mail (RESEND_API_KEY/BREVO_API_KEY ou SMTP) para cadastrar colaboradores (eles recebem um e-mail para definir a senha).",
         )
 
     ts = now()

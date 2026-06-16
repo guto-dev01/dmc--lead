@@ -45,13 +45,10 @@ No serviço, **Settings**:
 | **ADMIN_USERNAME** | `admin` |
 | **ADMIN_PASSWORD** | uma senha forte (login admin) |
 | **CONTA_PRINCIPAL_EMAIL** | e-mail do dono dos dados (ex.: `nathalial@complexodmc.com.br`) |
-| SMTP_HOST | `smtp.gmail.com` |
-| SMTP_PORT | `587` |
-| SMTP_USER | seu e-mail SMTP |
-| SMTP_PASSWORD | senha de app do SMTP |
-| SMTP_FROM | seu e-mail SMTP |
-| SMTP_FROM_NOME | `ImobPro` |
-| SMTP_USE_TLS | `true` |
+| **RESEND_API_KEY** | chave do Resend — **use isto no Railway** (o SMTP é bloqueado, veja abaixo) |
+| **EMAIL_FROM** | remetente verificado (ex.: `lead@complexodmc.com.br`) — domínio verificado no Resend |
+| SMTP_FROM_NOME | `ImobPro` (nome exibido do remetente) |
+| SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASSWORD / SMTP_FROM / SMTP_USE_TLS | só se NÃO usar a API HTTP (não funciona no Railway Free/Trial/Hobby) |
 | BRAVE_API_KEY | chave da Brave (busca de mercado) — ou GOOGLE_API_KEY+GOOGLE_CSE_ID |
 | HUNTER_API_KEY | (opcional) e-mail de decisores |
 | DONO_PRINCIPAL_EMAIL | (opcional) recebe aprovações de cadastro |
@@ -61,6 +58,15 @@ No serviço, **Settings**:
 
 > O `start` e a porta já vêm do `backend/railway.json` (`uvicorn ... --port $PORT`).
 > Na subida, o backend conecta no Mongo, cria índices e semeia os dados iniciais.
+
+> ⚠️ **E-mail no Railway:** o Railway BLOQUEIA conexões SMTP de saída (portas
+> 25/465/587) nos planos Free/Trial/Hobby — por isso o "Enviar e-mail de teste"
+> falha mesmo com as variáveis SMTP corretas. Use uma API HTTP (porta 443):
+> crie uma conta no [Resend](https://resend.com), verifique seu domínio,
+> e defina `RESEND_API_KEY` + `EMAIL_FROM`. O código usa a API automaticamente
+> quando a chave existe. (Alternativa: assinar o plano Pro do Railway, que libera SMTP.)
+> Confira o caminho ativo em `GET /` do backend: o campo `email_provider`
+> deve mostrar `resend` (ou `brevo`).
 
 ---
 

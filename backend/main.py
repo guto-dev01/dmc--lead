@@ -80,6 +80,12 @@ async def root():
         "status": "ok",
         "sistema": "ImobPro",
         "versao": "1.0.0",
+        # Caminho de envio realmente usado: 'resend' | 'brevo' | 'smtp' | null
+        "email": mailer.email_configurado(),
+        "email_provider": mailer.provider_ativo(),
+        "email_from": bool((settings.email_from or settings.smtp_from or "").strip()),
+        "resend_api_key": bool(settings.resend_api_key),
+        "brevo_api_key": bool(settings.brevo_api_key),
         "smtp": mailer.smtp_configurado(),
         "smtp_host": bool(settings.smtp_host),
         "smtp_from": bool(settings.smtp_from),

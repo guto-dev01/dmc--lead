@@ -50,6 +50,14 @@ class Settings(BaseSettings):
     smtp_from: str = ""
     smtp_from_nome: str = "Complexo DMC"
     smtp_use_tls: bool = True
+    # E-mail por API HTTP (porta 443) — use quando o host bloqueia SMTP de saída
+    # (ex.: Railway nos planos Free/Trial/Hobby). Basta UMA das chaves. O envio
+    # passa a usar a API e ignora o SMTP.
+    resend_api_key: str = ""
+    brevo_api_key: str = ""
+    # Remetente verificado no provedor HTTP (Resend exige domínio verificado;
+    # Brevo, um remetente verificado). Se vazio, usa o SMTP_FROM.
+    email_from: str = ""
 
     class Config:
         env_file = ".env"
