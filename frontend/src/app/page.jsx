@@ -1565,6 +1565,7 @@ export default function App() {
   const [enviandoTeste, setEnviandoTeste] = useState(false);
   const campanhaAssuntoRef = useRef(null);
   const campanhaMensagemRef = useRef(null);
+  const templateConteudoRef = useRef(null);
   // Insere uma variável (ex.: {{empresa}}) na posição do cursor do campo.
   const inserirVariavel = (ref, valor, setter, token) => {
     const el = ref.current;
@@ -5020,11 +5021,22 @@ export default function App() {
               className="w-full tech-input rounded-xl px-3 py-2 text-white text-sm" />
           </div>
           <div>
-            <label className="text-slate-400 text-sm block mb-1.5">Conteúdo <span className="text-slate-600">(use {`{{variavel}}`} para personalizar)</span></label>
-            <textarea value={newTemplate.conteudo} onChange={e => setNewTemplate(p => ({ ...p, conteudo: e.target.value }))}
-              placeholder="Olá, {{nome}}! ..."
-              rows={6}
+            <label className="text-slate-400 text-sm block mb-1.5">Conteúdo</label>
+            <div className="flex flex-wrap items-center gap-1.5 mb-2">
+              <span className="text-[11px] text-slate-500">Inserir:</span>
+              <button type="button" onClick={() => inserirVariavel(templateConteudoRef, newTemplate.conteudo, (v) => setNewTemplate(p => ({ ...p, conteudo: v })), "{{empresa}}")}
+                className="px-2.5 py-1 rounded-lg text-[11px] border border-[#00e7fc]/25 text-[#00e7fc] hover:bg-[#00e7fc]/10 transition-colors">+ Nome da empresa</button>
+              <button type="button" onClick={() => inserirVariavel(templateConteudoRef, newTemplate.conteudo, (v) => setNewTemplate(p => ({ ...p, conteudo: v })), "{{nome}}")}
+                className="px-2.5 py-1 rounded-lg text-[11px] border border-white/10 text-slate-300 hover:bg-white/5 hover:text-white transition-colors">+ Nome do contato</button>
+            </div>
+            <textarea ref={templateConteudoRef} value={newTemplate.conteudo} onChange={e => setNewTemplate(p => ({ ...p, conteudo: e.target.value }))}
+              placeholder="Ex: Olá {{nome}}, somos parceiros e queremos falar com a {{empresa}}..."
+              rows={8}
               className="w-full tech-input rounded-xl px-3 py-2 text-white text-sm resize-none" />
+            <p className="text-[11px] text-slate-500 mt-2">
+              As variáveis viram o dado real de cada destinatário no envio: <span className="text-slate-300">{"{{empresa}}"}</span> = nome da empresa,
+              {" "}<span className="text-slate-300">{"{{nome}}"}</span> = nome do contato.
+            </p>
           </div>
           <button onClick={handleSaveTemplate} disabled={!newTemplate.nome || !newTemplate.conteudo}
             className="w-full py-2.5 tech-button rounded-xl text-white text-sm font-medium disabled:opacity-50 transition-colors flex items-center justify-center gap-2">
