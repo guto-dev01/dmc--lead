@@ -124,28 +124,21 @@ async def _agregar(db, periodo: Optional[str], conta_id):
         dia = _bucket_dia(a.get("created_at"))
         evol[dia] = evol.get(dia, 0) + 1
 
-    # colaboradores (todos os usuários + qualquer autor avulso, ex.: admin)
+    # Colaboradores = MEMBROS DO TIME (não-gestores). O próprio dono/gestor NÃO
+    # aparece nesta lista — esta visão é para medir a equipe, não o gestor que a
+    # acompanha. Autores avulsos sem cadastro (ex.: admin do ambiente) também
+    # ficam de fora.
     colaboradores = []
-    vistos = set()
     for email, u in usuarios.items():
+        funcao = u.get("funcao") or "dono"
+        if funcao == "dono":
+            continue
         prod = por_autor.get(email, {"total": 0, "por_tipo": {}})
         eq = equipes.get(u.get("equipe_id"))
         colaboradores.append({
             "id": u["_id"], "email": email, "nome": u.get("nome") or email,
-            "funcao": u.get("funcao") or "dono", "status": u.get("status"),
+            "funcao": funcao, "status": u.get("status"),
             "equipe_id": u.get("equipe_id"), "equipe_nome": eq.get("nome") if eq else None,
-            "total": prod["total"], "por_tipo": prod["por_tipo"],
-        })
-        vistos.add(email)
-
-    # autores que agiram mas não são usuários cadastrados (ex.: admin do ambiente)
-    for autor, prod in por_autor.items():
-        if autor in vistos:
-            continue
-        nome = "Administrador" if autor == settings.admin_username else autor
-        colaboradores.append({
-            "id": None, "email": autor, "nome": nome, "funcao": "dono",
-            "status": "externo", "equipe_id": None, "equipe_nome": None,
             "total": prod["total"], "por_tipo": prod["por_tipo"],
         })
 
@@ -191,7 +184,11 @@ async def dashboard_equipes(user=Depends(require_auth), conta_id: str = Depends(
     db = get_db()
     total_equipes = await db.equipes.count_documents({"conta_id": conta_id})
     equipes_ativas = await db.equipes.count_documents({"conta_id": conta_id, "status": "ativa"})
-    total_colab = await db.usuarios.count_documents({"conta_id": conta_id})
+    # "Colaboradores" = membros do time (todas as funções, menos o gestor/dono).
+    membros_funcoes = [f for f in FUNCOES if f != "dono"]
+    total_colab = await db.usuarios.count_documents(
+        {"conta_id": conta_id, "funcao": {"$in": membros_funcoes}}
+    )
     por_funcao = {}
     for f in FUNCOES:
         por_funcao[f] = await db.usuarios.count_documents({"conta_id": conta_id, "funcao": f})
@@ -349,6 +346,52 @@ async def perfil_colaborador(colaborador_id: str, periodo: Optional[str] = Query
         "historico": historico,
         "tipos": TIPOS_PRODUTIVIDADE,
         "funcoes_label": FUNCOES_LABEL,
+    }
+
+
+@router.get("/colaboradores/{colaborador_id}/atividades")
+async def atividades_colaborador(
+    colaborador_id: str,
+    limit: int = Query(40, ge=1, le=200),
+    skip: int = Query(0, ge=0),
+    user=Depends(require_auth),
+    conta_id: str = Depends(conta_atual),
+):
+    """Registro COMPLETO de tudo que o colaborador fez (auditoria), em ordem
+    cronológica decrescente e paginado. É a visão "cada detalhe" usada pelo
+    gestor: inclui criações, edições, exclusões, envios e enriquecimentos."""
+    db = get_db()
+    u = await db.usuarios.find_one(
+        {"_id": colaborador_id, "conta_id": conta_id}, {"email": 1, "nome": 1}
+    )
+    if not u:
+        raise HTTPException(status_code=404, detail="Colaborador não encontrado.")
+
+    query = {"conta_id": conta_id, "autor": u["email"]}
+    total = await db.auditoria.count_documents(query)
+    rows = (
+        await db.auditoria.find(query)
+        .sort("created_at", -1)
+        .skip(skip)
+        .limit(limit)
+        .to_list(length=limit)
+    )
+    itens = [
+        {
+            "id": r["_id"], "acao": r.get("acao"), "metodo": r.get("metodo"),
+            "caminho": r.get("caminho"), "recurso": r.get("recurso"),
+            "status_code": r.get("status_code"), "ok": r.get("ok"),
+            "created_at": r.get("created_at"),
+        }
+        for r in rows
+    ]
+    return {
+        "items": itens,
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+        "tem_mais": skip + len(itens) < total,
+        "colaborador": {"id": u["_id"], "nome": u.get("nome"), "email": u["email"]},
     }
 
 

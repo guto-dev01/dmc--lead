@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import {
   Users, UserPlus, Users2, Plus, Pencil, X, Search, Mail, Phone,
   Trophy, BarChart3, TrendingUp, CheckCircle2, Power, Crown, Activity, Clock,
+  History, Building2, Megaphone, MessageCircle, FileText, Map, ShieldCheck,
 } from "lucide-react";
 
 // Abas do módulo (sub-navegação interna, no padrão do DMC)
@@ -22,6 +23,9 @@ const FUNCAO_META = {
   auxiliar: { label: "Auxiliar do Sistema", color: "#94a3b8", Icon: Activity },
 };
 const FUNCOES = ["dono", "prospector", "vendedor", "atendente", "auxiliar"];
+// Funções do TIME (sem "dono"): o gestor não é cadastrado nem medido como
+// colaborador — esta tela é para gerir e acompanhar as pessoas do time.
+const FUNCOES_TIME = FUNCOES.filter((f) => f !== "dono");
 
 const fmtNum = (n) => (n ?? 0).toLocaleString("pt-BR");
 const fmtDT = (v) => {
@@ -323,7 +327,7 @@ export default function EquipesPanel({ api, currentUser }) {
             <Colaboradores
               itens={colaboradores} tipos={tipos}
               busca={colBusca} setBusca={setColBusca} funcao={colFuncao} setFuncao={setColFuncao}
-              onNovo={() => { ensureEquipes(); setColabForm({ nome: "", email: "", telefone: "", funcao: "prospector", equipe_id: "" }); }}
+              onNovo={() => { ensureEquipes(); setColabForm({ nome: "", email: "", telefone: "", funcao: "vendedor", equipe_id: "" }); }}
               onEditar={(c) => { ensureEquipes(); setColabForm({ id: c.id, nome: c.nome, email: c.email, telefone: c.telefone || "", funcao: c.funcao, equipe_id: c.equipe_id || "" }); }}
               onPerfil={abrirPerfil} onToggle={toggleColab} nomeEquipe={nomeEquipe}
             />
@@ -382,7 +386,7 @@ export default function EquipesPanel({ api, currentUser }) {
             <div className="grid grid-cols-2 gap-3">
               <Field label="Função">
                 <select className="h-11 px-3 rounded-xl tech-input" value={colabForm.funcao} onChange={(e) => setColabForm({ ...colabForm, funcao: e.target.value })}>
-                  {FUNCOES.map((f) => <option key={f} value={f}>{FUNCAO_META[f].label}</option>)}
+                  {FUNCOES_TIME.map((f) => <option key={f} value={f}>{FUNCAO_META[f].label}</option>)}
                 </select>
               </Field>
               <Field label="Equipe">
@@ -399,7 +403,7 @@ export default function EquipesPanel({ api, currentUser }) {
       {/* Perfil do colaborador */}
       {perfil && (
         <Modal title="Perfil do colaborador" onClose={() => setPerfil(null)}>
-          {perfil.loading ? <Spinner /> : <PerfilColab data={perfil} tipos={perfil.tipos || tipos} />}
+          {perfil.loading ? <Spinner /> : <PerfilColab api={api} data={perfil} tipos={perfil.tipos || tipos} />}
         </Modal>
       )}
     </div>
@@ -417,15 +421,14 @@ function VisaoGeral({ dashboard, desempenho, tipos }) {
 
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <Stat label="Equipes" value={fmtNum(dashboard.total_equipes)} sub={`${fmtNum(dashboard.equipes_ativas)} ativas`} Icon={Users2} accent="#12e7ff" />
-        <Stat label="Colaboradores" value={fmtNum(dashboard.total_colaboradores)} sub="no sistema" Icon={Users} accent="#00ff6a" />
-        <Stat label="Ações no período" value={fmtNum((desempenho?.colaboradores || []).reduce((s, c) => s + c.total, 0))} sub="eventos reais" Icon={Activity} accent="#f59e0b" />
-        <Stat label="Donos" value={fmtNum(pf.dono)} sub="gestão" Icon={Crown} accent="#a78bfa" />
+        <Stat label="Colaboradores" value={fmtNum(dashboard.total_colaboradores)} sub="no time" Icon={Users} accent="#00ff6a" />
+        <Stat label="Ações do time" value={fmtNum((desempenho?.colaboradores || []).reduce((s, c) => s + c.total, 0))} sub="eventos reais" Icon={Activity} accent="#f59e0b" />
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-        {FUNCOES.map((f) => {
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {FUNCOES_TIME.map((f) => {
           const m = FUNCAO_META[f]; const I = m.Icon;
           return (
             <Card key={f} className="!p-4">
@@ -548,7 +551,7 @@ function Colaboradores({ itens, tipos, busca, setBusca, funcao, setFuncao, onNov
         </div>
         <select className="h-11 px-3 rounded-xl tech-input" value={funcao} onChange={(e) => setFuncao(e.target.value)}>
           <option value="">Todas as funções</option>
-          {FUNCOES.map((f) => <option key={f} value={f}>{FUNCAO_META[f].label}</option>)}
+          {FUNCOES_TIME.map((f) => <option key={f} value={f}>{FUNCAO_META[f].label}</option>)}
         </select>
         <button onClick={onNovo} className="h-11 px-4 rounded-xl tech-button text-sm inline-flex items-center gap-2"><UserPlus size={16} /> Novo colaborador</button>
       </div>
@@ -616,10 +619,45 @@ function Equipes({ itens, onNovo, onEditar, onToggle }) {
   );
 }
 
+// Ícone/cor por módulo do sistema, usado no registro completo de atividade.
+const RECURSO_META = {
+  empresas: { Icon: Building2, color: "#12e7ff" },
+  decisores: { Icon: Users, color: "#a78bfa" },
+  contatos: { Icon: Users, color: "#a78bfa" },
+  campanhas: { Icon: Megaphone, color: "#f59e0b" },
+  whatsapp: { Icon: MessageCircle, color: "#00ff6a" },
+  templates: { Icon: FileText, color: "#38bdf8" },
+  tarefas: { Icon: CheckCircle2, color: "#34d399" },
+  mercado: { Icon: Map, color: "#f472b6" },
+  dmc: { Icon: Building2, color: "#f59e0b" },
+  equipes: { Icon: Users, color: "#12e7ff" },
+};
+
 // ---------- Perfil do colaborador ----------
-function PerfilColab({ data, tipos }) {
+function PerfilColab({ api, data, tipos }) {
   const c = data.colaborador;
   const tipoKeys = Object.keys(tipos || {});
+
+  // Registro completo de atividade (auditoria, paginado)
+  const PAGE = 40;
+  const [ativ, setAtiv] = useState({ items: [], total: 0, skip: 0, tem_mais: false });
+  const [ativLoading, setAtivLoading] = useState(true);
+  const [ativErro, setAtivErro] = useState("");
+
+  const carregarAtiv = useCallback(async (skip) => {
+    setAtivLoading(true); setAtivErro("");
+    try {
+      const d = await api(`/api/equipes/colaboradores/${c.id}/atividades?limit=${PAGE}&skip=${skip}`);
+      setAtiv((prev) => ({
+        items: skip === 0 ? (d.items || []) : [...prev.items, ...(d.items || [])],
+        total: d.total || 0, skip, tem_mais: !!d.tem_mais,
+      }));
+    } catch (e) { setAtivErro(e.message || "Falha ao carregar a atividade."); }
+    finally { setAtivLoading(false); }
+  }, [api, c.id]);
+
+  useEffect(() => { carregarAtiv(0); }, [carregarAtiv]);
+
   return (
     <div className="space-y-5">
       <div className="flex items-center gap-3">
@@ -652,20 +690,50 @@ function PerfilColab({ data, tipos }) {
         </div>
       </div>
 
+      {/* Registro completo — cada ação que a pessoa fez no sistema */}
       <div>
-        <p className="text-slate-400 text-xs uppercase tracking-wider mb-2">Histórico recente</p>
-        <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
-          {(data.historico || []).map((h, i) => (
-            <div key={i} className="flex items-start gap-2 text-[13px]">
-              <span className="mt-0.5 w-1.5 h-1.5 rounded-full bg-[#12e7ff] shrink-0" />
-              <div className="min-w-0">
-                <span className="text-slate-300">{h.descricao || tipos[h.tipo] || h.tipo}</span>
-                <span className="text-slate-600 ml-2 text-[11px]">{fmtDT(h.created_at)}</span>
-              </div>
-            </div>
-          ))}
-          {!(data.historico || []).length && <p className="text-slate-500 text-sm">Sem histórico no período.</p>}
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-slate-400 text-xs uppercase tracking-wider flex items-center gap-1.5">
+            <History size={13} className="text-[#12e7ff]" /> Registro completo de atividade
+          </p>
+          {ativ.total > 0 && <span className="text-[11px] text-slate-500">{fmtNum(ativ.total)} ações registradas</span>}
         </div>
+
+        {ativErro && <p className="text-rose-300 text-sm mb-2">{ativErro}</p>}
+
+        <div className="space-y-1 max-h-72 overflow-y-auto pr-1">
+          {ativ.items.map((a) => {
+            const m = RECURSO_META[a.recurso] || { Icon: ShieldCheck, color: "#94a3b8" };
+            const I = m.Icon;
+            return (
+              <div key={a.id} className="flex items-start gap-2.5 rounded-lg px-2 py-1.5 hover:bg-white/[0.02]">
+                <span className="mt-0.5 w-7 h-7 rounded-lg grid place-items-center shrink-0" style={{ background: `${m.color}1f`, color: m.color }}>
+                  <I size={13} />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-slate-200 text-[13px]">{a.acao}</span>
+                    {!a.ok && <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-300">não concluída</span>}
+                  </div>
+                  <span className="text-slate-600 text-[11px]">{fmtDT(a.created_at)}</span>
+                </div>
+              </div>
+            );
+          })}
+
+          {ativLoading && !ativ.items.length && <div className="py-6 flex justify-center"><div className="w-6 h-6 border-2 border-[#12e7ff] border-t-transparent rounded-full animate-spin" /></div>}
+          {!ativLoading && !ativ.items.length && !ativErro && <p className="text-slate-500 text-sm py-2">Nenhuma ação registrada para esta pessoa ainda.</p>}
+        </div>
+
+        {ativ.tem_mais && (
+          <button
+            onClick={() => carregarAtiv(ativ.skip + PAGE)}
+            disabled={ativLoading}
+            className="mt-3 w-full h-10 rounded-xl text-sm font-medium text-[#12e7ff] border border-[#12e7ff]/25 hover:bg-[#12e7ff]/10 disabled:opacity-50"
+          >
+            {ativLoading ? "Carregando..." : "Carregar mais"}
+          </button>
+        )}
       </div>
     </div>
   );

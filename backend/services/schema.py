@@ -81,6 +81,12 @@ async def _ensure_indexes(db) -> None:
     await db.atividades.create_index([("conta_id", ASCENDING), ("autor", ASCENDING), ("created_at", DESCENDING)])
     await db.atividades.create_index([("tipo", ASCENDING)])
 
+    # auditoria — registro completo de ações por usuário (quem fez o quê/quando).
+    # Consulta principal: por conta + autor, mais recentes primeiro.
+    await db.auditoria.create_index([("conta_id", ASCENDING), ("autor", ASCENDING), ("created_at", DESCENDING)])
+    await db.auditoria.create_index([("conta_id", ASCENDING), ("created_at", DESCENDING)])
+    await db.auditoria.create_index([("created_at", DESCENDING)])
+
     # mercado_itens — UNIQUE (conta, area, tipo, nome, url) usado no upsert do scan.
     # Substitui o índice global antigo (uniq_mercado_item).
     await _drop_index_se_existir(db.mercado_itens, "uniq_mercado_item")

@@ -140,6 +140,47 @@ async def conta_atual(user: dict = Depends(require_auth)) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Função / nível de acesso
+#
+# A função "dono" identifica o GESTOR da conta — quem cadastra colaboradores e
+# acompanha a produtividade do time. Os demais (vendedor/prospector/atendente/
+# auxiliar) são colaboradores: acessam todo o sistema, EXCETO o módulo de
+# Equipes (gestão de time e relatórios), que é exclusivo do gestor.
+# ---------------------------------------------------------------------------
+
+async def funcao_atual(user: dict = Depends(require_auth)) -> str:
+    """Resolve a função organizacional de quem fez a requisição.
+
+    O login `admin` (conta sentinela) equivale ao dono/gestor. Donos e
+    colaboradores têm a função salva em `usuarios.funcao` (default "dono" para
+    o auto-cadastro legado, que não preenchia o campo)."""
+    sub = user.get("sub")
+    if sub == settings.admin_username:
+        return "dono"
+    db = get_db()
+    usuario = await db.usuarios.find_one(
+        {"email": (sub or "").strip().lower()}, {"funcao": 1}
+    )
+    return (usuario or {}).get("funcao") or "dono"
+
+
+def is_gestor(funcao: Optional[str]) -> bool:
+    return (funcao or "dono") == "dono"
+
+
+async def require_gestor(user: dict = Depends(require_auth)) -> dict:
+    """Bloqueia o acesso de quem não é gestor (dono) da conta. Usado no módulo
+    de Equipes para que colaboradores (ex.: vendedores) não vejam a gestão do
+    time nem os relatórios de produtividade."""
+    if not is_gestor(await funcao_atual(user)):
+        raise HTTPException(
+            status_code=403,
+            detail="Acesso restrito ao gestor da conta.",
+        )
+    return user
+
+
+# ---------------------------------------------------------------------------
 # Tokens de ação assinados (aprovação de cadastro / redefinição de senha)
 #
 # Mesmo esquema HMAC do token de acesso, mas com um campo `typ` (finalidade) e

@@ -1713,6 +1713,14 @@ export default function App() {
     setStoredPage(page);
   }, [isAuthed, page]);
 
+  // Acesso ao módulo Equipes é exclusivo do gestor (função "dono"). Se um
+  // colaborador (ex.: vendedor) cair nessa página — por link salvo, por exemplo —
+  // ele é redirecionado para o Dashboard. A API também recusa (403) por garantia.
+  const isGestor = (authUser?.funcao || "dono") === "dono";
+  useEffect(() => {
+    if (isAuthed && !isGestor && page === "equipes") setPage("dashboard");
+  }, [isAuthed, isGestor, page]);
+
   const handleLogin = async (e) => {
     e.preventDefault();
     setLoginLoading(true);
@@ -3022,7 +3030,8 @@ export default function App() {
     { id: "campanhas", icon: "megaphone", label: "Campanhas" },
     { id: "templates", icon: "file", label: "Templates" },
     { id: "tarefas", icon: "tasks", label: "Tarefas" },
-    { id: "equipes", icon: "users", label: "Equipes" },
+    // Equipes só aparece para o gestor (dono/admin).
+    ...(isGestor ? [{ id: "equipes", icon: "users", label: "Equipes" }] : []),
     { id: "conversas", icon: "phone", label: "Conversas" },
     { id: "whatsapp", icon: "whatsapp", label: "WhatsApp" },
   ];
@@ -3149,7 +3158,7 @@ export default function App() {
           {page.startsWith("dmc:") && <DMCPlatform secaoControlada={page.slice(4)} />}
 
           {/* EQUIPES & COLABORADORES — produtividade a partir de eventos reais */}
-          {page === "equipes" && <EquipesPanel api={api} currentUser={authUser} />}
+          {page === "equipes" && isGestor && <EquipesPanel api={api} currentUser={authUser} />}
 
           {/* CONVERSAS (espelho do WhatsApp — tema claro estilo WhatsApp Web) */}
           {page === "conversas" && (
