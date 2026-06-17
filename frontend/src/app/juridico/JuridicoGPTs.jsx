@@ -1,6 +1,7 @@
 "use client";
 import { useMemo, useState } from "react";
 import { GPTS, CATEGORIAS, CAT_COR } from "./gpts-data";
+import ChatPanel from "./ChatPanel";
 
 // Ícones inline (mesmo estilo stroke do ImobPro)
 const I = {
@@ -17,16 +18,22 @@ const I = {
     </svg>
   ),
   external: (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <path d="M7 17 17 7" />
       <path d="M7 7h10v10" />
     </svg>
   ),
+  chat: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </svg>
+  ),
 };
 
-export default function JuridicoGPTs() {
+export default function JuridicoGPTs({ api }) {
   const [busca, setBusca] = useState("");
   const [categoria, setCategoria] = useState("Todas");
+  const [chatAlvo, setChatAlvo] = useState(null); // GPT selecionado p/ conversar na tela
 
   const contagem = useMemo(() => {
     const map = { Todas: GPTS.length };
@@ -50,9 +57,9 @@ export default function JuridicoGPTs() {
     <div className="max-w-[1200px]">
       {/* Intro */}
       <p className="text-[13.5px] text-[var(--foreground-muted)]/80 max-w-2xl mb-6 leading-relaxed">
-        Coleção de {GPTS.length} assistentes de IA especializados em Direito Brasileiro —
-        peças, jurisprudência, contratos, estratégia e mais. Clique em um card para abrir
-        o assistente diretamente no ChatGPT.
+        {GPTS.length} assistentes de IA especializados em Direito Brasileiro. Clique em um card
+        para <strong className="text-white">conversar aqui na tela</strong> — ou abra o GPT
+        original no ChatGPT, se preferir.
       </p>
 
       {/* Busca */}
@@ -118,12 +125,10 @@ export default function JuridicoGPTs() {
           {filtrados.map((g) => {
             const cor = CAT_COR[g.categoria] || "#12e7ff";
             return (
-              <a
+              <div
                 key={g.url}
-                href={g.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="group surface flex flex-col gap-3 p-5 rounded-[16px] border border-[var(--hairline)] hover:border-[rgba(18,231,255,0.3)] transition-all duration-200 hover:-translate-y-0.5"
+                onClick={() => setChatAlvo(g)}
+                className="group surface flex flex-col gap-3 p-5 rounded-[16px] border border-[var(--hairline)] hover:border-[rgba(18,231,255,0.3)] transition-all duration-200 hover:-translate-y-0.5 cursor-pointer"
                 style={{ boxShadow: "var(--shadow-sm)" }}
               >
                 {/* Badge categoria */}
@@ -145,17 +150,26 @@ export default function JuridicoGPTs() {
                   {g.descricao}
                 </p>
 
-                {/* Ação */}
+                {/* Ações */}
                 <div className="flex items-center justify-between pt-3 border-t border-[var(--hairline)]">
-                  <span className="text-[11.5px] text-[#5f7980]">Abrir no ChatGPT</span>
+                  <a
+                    href={g.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    className="inline-flex items-center gap-1 text-[11.5px] text-[#5f7980] hover:text-[var(--accent-cyan)] transition-colors"
+                    title="Abrir o GPT original no ChatGPT"
+                  >
+                    ChatGPT {I.external}
+                  </a>
                   <span
-                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full text-[11.5px] font-semibold text-[#06262b] group-hover:scale-105 transition-transform"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11.5px] font-semibold text-[#06262b] group-hover:scale-105 transition-transform"
                     style={{ background: "var(--accent-gradient)" }}
                   >
-                    Acessar {I.external}
+                    {I.chat} Conversar aqui
                   </span>
                 </div>
-              </a>
+              </div>
             );
           })}
         </div>
@@ -183,6 +197,20 @@ export default function JuridicoGPTs() {
         devem ser revisados por profissional habilitado antes de qualquer uso oficial. Não substituem a
         análise do advogado.
       </p>
+
+      {/* Chat embutido (abre ao clicar num card) */}
+      {chatAlvo && (
+        <ChatPanel
+          api={api}
+          modal
+          onClose={() => setChatAlvo(null)}
+          titulo={chatAlvo.nome}
+          subtitulo={chatAlvo.categoria}
+          categoria={chatAlvo.categoria}
+          assistente={chatAlvo.nome}
+          descricao={chatAlvo.descricao}
+        />
+      )}
     </div>
   );
 }

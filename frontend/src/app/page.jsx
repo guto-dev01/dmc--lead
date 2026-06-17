@@ -6,6 +6,7 @@ import DMCPlatform, { DMC_NAV } from "./dmc/DMCPlatform";
 import EquipesPanel from "./equipes/EquipesPanel";
 import AgendaCalendar from "./agenda/AgendaCalendar";
 import JuridicoGPTs from "./juridico/JuridicoGPTs";
+import ChatPanel from "./juridico/ChatPanel";
 
 // Mapa (Leaflet) reutilizado da plataforma DMC — só no cliente.
 const MapaEmpresas = dynamic(() => import("./dmc/DMCMapa"), {
@@ -75,6 +76,8 @@ const isValidPage = (value) => {
     "equipes",
     "conversas",
     "whatsapp",
+    "juridico",
+    "juridico-chat",
   ]);
   if (basePages.has(value)) return true;
   return typeof value === "string" && value.startsWith("dmc:");
@@ -83,9 +86,10 @@ const isValidPage = (value) => {
 const api = async (path, opts = {}) => {
   const { auth = true, headers = {}, ...fetchOpts } = opts;
   const token = auth ? getStoredToken() : "";
+  const isForm = typeof FormData !== "undefined" && fetchOpts.body instanceof FormData;
   const r = await fetch(`${apiBase()}${path}`, {
     headers: {
-      "Content-Type": "application/json",
+      ...(isForm ? {} : { "Content-Type": "application/json" }),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...headers,
     },
@@ -3047,11 +3051,12 @@ export default function App() {
     // Equipes só aparece para o gestor (dono/admin).
     ...(isGestor ? [{ id: "equipes", icon: "users", label: "Equipes" }] : []),
     { id: "juridico", icon: "scale", label: "GPTs Jurídicos" },
+    { id: "juridico-chat", icon: "spark", label: "Chat IA" },
     { id: "conversas", icon: "phone", label: "Conversas" },
     { id: "whatsapp", icon: "whatsapp", label: "WhatsApp" },
   ];
 
-  const pageTitle = page === "dashboard" ? "Dashboard" : page === "empresas" ? "Empresas" : page === "decisores" ? "Decisores" : page === "clientes" ? clientesTitulo : page === "mercado" ? "Mercado" : page === "mapa" ? "Mapa" : page === "campanhas" ? "Campanhas" : page === "templates" ? "Templates" : page === "tarefas" ? "Tarefas" : page === "equipes" ? "Equipes" : page === "juridico" ? "GPTs Jurídicos" : page === "conversas" ? "Conversas" : page === "whatsapp" ? "WhatsApp" : "Complexo DMC";
+  const pageTitle = page === "dashboard" ? "Dashboard" : page === "empresas" ? "Empresas" : page === "decisores" ? "Decisores" : page === "clientes" ? clientesTitulo : page === "mercado" ? "Mercado" : page === "mapa" ? "Mapa" : page === "campanhas" ? "Campanhas" : page === "templates" ? "Templates" : page === "tarefas" ? "Tarefas" : page === "equipes" ? "Equipes" : page === "juridico" ? "GPTs Jurídicos" : page === "juridico-chat" ? "Chat IA Jurídico" : page === "conversas" ? "Conversas" : page === "whatsapp" ? "WhatsApp" : "Complexo DMC";
 
   return (
     <div className="flex h-screen bg-[var(--background)] text-white overflow-hidden" style={{ fontFamily: "var(--font-sans)" }}>
@@ -3176,7 +3181,22 @@ export default function App() {
           {page === "equipes" && isGestor && <EquipesPanel api={api} currentUser={authUser} />}
 
           {/* GPTs JURÍDICOS — catálogo de assistentes de IA jurídicos */}
-          {page === "juridico" && <JuridicoGPTs />}
+          {page === "juridico" && <JuridicoGPTs api={api} />}
+
+          {/* CHAT IA JURÍDICO — assistente geral na própria tela */}
+          {page === "juridico-chat" && (
+            <ChatPanel
+              api={api}
+              titulo="Assistente Jurídico IA"
+              subtitulo="Direito Brasileiro · todos os módulos"
+              sugestoes={[
+                "Redija uma minuta de petição inicial de ação de cobrança",
+                "Pesquise jurisprudência recente sobre dano moral",
+                "Elabore um parecer sobre rescisão contratual",
+                "Crie 3 estratégias para um caso trabalhista",
+              ]}
+            />
+          )}
 
           {/* CONVERSAS (espelho do WhatsApp — tema claro estilo WhatsApp Web) */}
           {page === "conversas" && (
