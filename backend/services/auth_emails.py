@@ -108,6 +108,37 @@ def email_definir_senha(nome: str, link: str, papel: str = "colaborador") -> str
     return _email_layout("Bem-vindo ao sistema — defina sua senha", corpo)
 
 
+def email_nova_tarefa(nome: str, titulo: str, descricao: str, prioridade: str,
+                      vencimento: str, atribuido_por: str, link_login: str) -> str:
+    """Aviso enviado ao responsável quando uma tarefa é atribuída a ele."""
+    saudacao = f"Olá, {escape(nome)}! " if nome else ""
+    desc_html = ""
+    if (descricao or "").strip():
+        desc_html = (
+            '<p style="margin:0 0 6px 0;font-size:13px;color:#64748b;">Descrição</p>'
+            f'<p style="margin:0 0 18px 0;font-size:14px;color:#334155;line-height:1.6;white-space:pre-line;">{escape(descricao)}</p>'
+        )
+    corpo = f"""\
+            <p style="margin:0 0 16px 0;font-size:15px;color:#334155;line-height:1.6;">
+              {saudacao}Uma nova tarefa foi atribuída a você por {escape(atribuido_por)}.
+            </p>
+            <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;background:#f8fafc;border-radius:10px;margin:0 0 18px 0;">
+              <tr><td style="padding:14px 16px;font-size:14px;color:#0f172a;line-height:1.7;">
+                <strong>Tarefa:</strong> {escape(titulo)}<br/>
+                <strong>Prioridade:</strong> {escape(prioridade)}<br/>
+                <strong>Prazo:</strong> {escape(vencimento)}
+              </td></tr>
+            </table>
+            {desc_html}
+            <table role="presentation" cellpadding="0" cellspacing="0"><tr>
+              <td>{_botao("Abrir o sistema", link_login)}</td>
+            </tr></table>
+            <p style="margin:20px 0 0 0;font-size:12px;color:#94a3b8;line-height:1.6;">
+              Acesse o sistema com o seu e-mail e abra a página <strong>Tarefas</strong> para ver os detalhes.
+            </p>"""
+    return _email_layout("Você recebeu uma nova tarefa", corpo)
+
+
 def email_redefinir_senha(nome: str, link_reset: str) -> str:
     saudacao = f"Olá, {escape(nome)}! " if nome else ""
     corpo = f"""\
