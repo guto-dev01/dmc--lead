@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import DMCPlatform, { DMC_NAV } from "./dmc/DMCPlatform";
 import EquipesPanel from "./equipes/EquipesPanel";
 import AgendaCalendar from "./agenda/AgendaCalendar";
+import JuridicoGPTs from "./juridico/JuridicoGPTs";
 
 // Mapa (Leaflet) reutilizado da plataforma DMC — só no cliente.
 const MapaEmpresas = dynamic(() => import("./dmc/DMCMapa"), {
@@ -138,6 +139,7 @@ const Icon = ({ name, size = 18 }) => {
     chevronLeft: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><polyline points="15 18 9 12 15 6"/></svg>,
     chevronRight: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><polyline points="9 18 15 12 9 6"/></svg>,
     calendar: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>,
+    scale: <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12 3v18M3 7h18M6 7l-3 6a3 3 0 0 0 6 0L6 7zM18 7l-3 6a3 3 0 0 0 6 0l-3-6zM7 21h10"/></svg>,
   };
   return icons[name] || null;
 };
@@ -1653,8 +1655,9 @@ export default function App() {
   const [editingTemplateId, setEditingTemplateId] = useState(null);
   const [enriching, setEnriching] = useState(false);
   // ---- Tarefas ----
-  const TAREFA_FORM_VAZIO = { titulo: "", descricao: "", responsavel: "", prioridade: "media", status: "pendente", data_vencimento: "", observacoes: "" };
+  const TAREFA_FORM_VAZIO = { titulo: "", descricao: "", responsavel: "", responsavel_email: "", prioridade: "media", status: "pendente", data_vencimento: "", observacoes: "" };
   const [tarefas, setTarefas] = useState([]);
+  const [tarefaPessoas, setTarefaPessoas] = useState([]);
   const [tarefasResumo, setTarefasResumo] = useState({ total: 0, pendentes: 0, em_andamento: 0, concluidas: 0, vencidas: 0 });
   const [tarefasLoading, setTarefasLoading] = useState(false);
   const [tarefaBusca, setTarefaBusca] = useState("");
@@ -2137,6 +2140,16 @@ export default function App() {
       setTarefasLoading(false);
     }
   }, [tarefaBusca, tarefaFiltroStatus, tarefaFiltroPrioridade, tarefaFiltroResponsavel, tarefaFiltroVenceAte, tarefaFiltroVencidas]);
+
+  // Pessoas que podem ser responsáveis (membros da conta) — para o seletor do form.
+  useEffect(() => {
+    if (!isAuthed || page !== "tarefas") return;
+    let cancelled = false;
+    api("/api/tarefas/responsaveis")
+      .then((d) => { if (!cancelled) setTarefaPessoas(Array.isArray(d) ? d : (d?.items || [])); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [isAuthed, page]);
 
   const loadCampaignTargets = useCallback(async () => {
     try {
@@ -2746,6 +2759,7 @@ export default function App() {
       titulo: t.titulo || "",
       descricao: t.descricao || "",
       responsavel: t.responsavel || "",
+      responsavel_email: t.responsavel_email || "",
       prioridade: t.prioridade || "media",
       status: t.status || "pendente",
       data_vencimento: t.data_vencimento || "",
@@ -3032,11 +3046,12 @@ export default function App() {
     { id: "tarefas", icon: "tasks", label: "Tarefas" },
     // Equipes só aparece para o gestor (dono/admin).
     ...(isGestor ? [{ id: "equipes", icon: "users", label: "Equipes" }] : []),
+    { id: "juridico", icon: "scale", label: "GPTs Jurídicos" },
     { id: "conversas", icon: "phone", label: "Conversas" },
     { id: "whatsapp", icon: "whatsapp", label: "WhatsApp" },
   ];
 
-  const pageTitle = page === "dashboard" ? "Dashboard" : page === "empresas" ? "Empresas" : page === "decisores" ? "Decisores" : page === "clientes" ? clientesTitulo : page === "mercado" ? "Mercado" : page === "mapa" ? "Mapa" : page === "campanhas" ? "Campanhas" : page === "templates" ? "Templates" : page === "tarefas" ? "Tarefas" : page === "equipes" ? "Equipes" : page === "conversas" ? "Conversas" : page === "whatsapp" ? "WhatsApp" : "Complexo DMC";
+  const pageTitle = page === "dashboard" ? "Dashboard" : page === "empresas" ? "Empresas" : page === "decisores" ? "Decisores" : page === "clientes" ? clientesTitulo : page === "mercado" ? "Mercado" : page === "mapa" ? "Mapa" : page === "campanhas" ? "Campanhas" : page === "templates" ? "Templates" : page === "tarefas" ? "Tarefas" : page === "equipes" ? "Equipes" : page === "juridico" ? "GPTs Jurídicos" : page === "conversas" ? "Conversas" : page === "whatsapp" ? "WhatsApp" : "Complexo DMC";
 
   return (
     <div className="flex h-screen bg-[var(--background)] text-white overflow-hidden" style={{ fontFamily: "var(--font-sans)" }}>
@@ -3159,6 +3174,9 @@ export default function App() {
 
           {/* EQUIPES & COLABORADORES — produtividade a partir de eventos reais */}
           {page === "equipes" && isGestor && <EquipesPanel api={api} currentUser={authUser} />}
+
+          {/* GPTs JURÍDICOS — catálogo de assistentes de IA jurídicos */}
+          {page === "juridico" && <JuridicoGPTs />}
 
           {/* CONVERSAS (espelho do WhatsApp — tema claro estilo WhatsApp Web) */}
           {page === "conversas" && (
@@ -5088,9 +5106,22 @@ export default function App() {
           </div>
           <div>
             <label className="text-slate-400 text-sm block mb-1.5">Responsável</label>
-            <input value={tarefaForm.responsavel} onChange={(e) => setTarefaForm((p) => ({ ...p, responsavel: e.target.value }))}
-              placeholder="Nome do responsável (deixe em branco para “Sem responsável”)"
-              className="w-full tech-input rounded-xl px-3 py-2 text-white text-sm" />
+            <select value={tarefaForm.responsavel_email || ""}
+              onChange={(e) => {
+                const email = e.target.value;
+                const pessoa = tarefaPessoas.find((x) => x.email === email);
+                setTarefaForm((p) => ({ ...p, responsavel_email: email, responsavel: pessoa ? pessoa.nome : "" }));
+              }}
+              className="w-full tech-input rounded-xl px-3 py-2 text-white text-sm">
+              <option value="">Sem responsável</option>
+              {tarefaPessoas.map((pessoa) => (
+                <option key={pessoa.id} value={pessoa.email}>{pessoa.nome}</option>
+              ))}
+            </select>
+            {tarefaForm.responsavel && !tarefaForm.responsavel_email && (
+              <p className="text-amber-400/80 text-xs mt-1.5">Responsável atual: {tarefaForm.responsavel} — selecione uma pessoa acima para notificar por e-mail.</p>
+            )}
+            <p className="text-slate-500 text-xs mt-1.5">A pessoa escolhida recebe um e-mail avisando da nova tarefa.</p>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
