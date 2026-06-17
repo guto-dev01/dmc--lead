@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Depends
 from contextlib import asynccontextmanager
-from routers import auth, empresas, cnpj, whatsapp, campanhas, templates, dashboard, mercado, dmc, decisores, tarefas, equipes, config
+from routers import auth, empresas, cnpj, whatsapp, campanhas, templates, dashboard, mercado, dmc, decisores, tarefas, equipes, config, juridico
 from services.schema import ensure_schema
 from services.auth import require_auth, require_gestor
 from services.auditoria import instalar_auditoria
@@ -74,6 +74,7 @@ app.include_router(mercado.router, prefix="/api/mercado", tags=["Mercado"], depe
 app.include_router(dmc.router, prefix="/api/dmc", tags=["Complexo DMC"], dependencies=[Depends(require_auth)])
 app.include_router(decisores.router, prefix="/api/decisores", tags=["Decisores"], dependencies=[Depends(require_auth)])
 app.include_router(tarefas.router, prefix="/api/tarefas", tags=["Tarefas"], dependencies=[Depends(require_auth)])
+app.include_router(juridico.router, prefix="/api/juridico", tags=["Jurídico IA"], dependencies=[Depends(require_auth)])
 # Equipes: módulo de gestão do time — restrito ao GESTOR (dono/admin). Colaboradores
 # (vendedor/prospector/atendente/auxiliar) recebem 403 em qualquer rota daqui.
 app.include_router(equipes.router, prefix="/api/equipes", tags=["Equipes"], dependencies=[Depends(require_gestor)])
