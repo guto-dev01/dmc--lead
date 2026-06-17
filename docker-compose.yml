@@ -93,6 +93,14 @@ services:
       SERPER_API_KEY: ${SERPER_API_KEY:-}
       BRAVE_API_KEY: ${BRAVE_API_KEY:-}
       HUNTER_API_KEY: ${HUNTER_API_KEY:-}
+      # Chat IA Jurídico — provedor de IA (chave fica SÓ no servidor)
+      # Gemini (grátis, sem cartão) é o padrão; OpenAI é opcional (pago).
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      # Tamanho máx. da RESPOSTA do chat (em tokens). Padrão 8192.
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-65536}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER:-}
