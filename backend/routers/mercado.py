@@ -9,6 +9,8 @@ from services.market_intelligence import (
     scan_market,
     scan_market_by_streets,
     list_area_streets,
+    diagnostico_busca,
+    aviso_busca,
     _strip_accents,
 )
 from services.auth import conta_atual
@@ -317,11 +319,20 @@ async def listar_ruas(area: str, limit: int = 40, conta_id: str = Depends(conta_
     return {"area": area, "total": len(ruas), "ruas": ruas}
 
 
+@router.get("/diagnostico")
+async def diagnostico_provedor_busca(conta_id: str = Depends(conta_atual)):
+    """Status do provedor de busca (Google/Serper/Brave/DuckDuckGo): o que está
+    configurado, problemas detectáveis e o último erro. A tela usa isto para
+    avisar quando a busca está degradada em vez de mostrar resultado vazio."""
+    return diagnostico_busca()
+
+
 @router.post("/scan")
 async def escanear_mercado(body: MarketScanRequest, conta_id: str = Depends(conta_atual)):
     db = get_db()
     ramo = normalizar_ramo(body.ramo)
     cidade = (body.cidade or "São Paulo").strip() or "São Paulo"
+    diag = diagnostico_busca()
 
     # Modo rua a rua: lista as ruas da região (OSM) e busca itens do ramo em cada uma
     if body.por_rua:
@@ -347,9 +358,12 @@ async def escanear_mercado(body: MarketScanRequest, conta_id: str = Depends(cont
             "summary": result["summary"],
             "sources": result["sources"],
             "items": saved,
+            "diagnostico": diag,
         }
         if result.get("aviso"):
             resposta["aviso"] = result["aviso"]
+        elif not diag["tem_provedor_keyed"] and result["total"] < 3:
+            resposta["aviso"] = "⚠️ Busca degradada. " + " ".join(diag["problemas"])
         return resposta
 
     if body.empresa_ids:
@@ -383,7 +397,7 @@ async def escanear_mercado(body: MarketScanRequest, conta_id: str = Depends(cont
     for item in result["items"]:
         saved.append(await _save_market_item(db, item, conta_id, ramo))
 
-    return {
+    resposta = {
         "ok": True,
         "area": body.area,
         "ramo": ramo,
@@ -392,4 +406,8 @@ async def escanear_mercado(body: MarketScanRequest, conta_id: str = Depends(cont
         "summary": result["summary"],
         "sources": result["sources"],
         "items": saved,
+        "diagnostico": diag,
     }
+    if not diag["tem_provedor_keyed"] and result["total"] < 3:
+        resposta["aviso"] = "⚠️ Busca degradada. " + " ".join(diag["problemas"])
+    return resposta

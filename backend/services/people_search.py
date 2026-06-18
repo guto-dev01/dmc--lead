@@ -12,7 +12,9 @@ from urllib.parse import urlparse
 
 import urllib.parse
 
-from services.market_intelligence import _web_search, _has_search_provider
+from services.market_intelligence import (
+    _web_search, _has_search_provider, _tem_provedor_keyed, aviso_busca,
+)
 from services.hunter import (
     hunter_ativo, hunter_email_finder, hunter_domain_search, dominio_de,
 )
@@ -114,7 +116,8 @@ def _pesquisar_sync(empresa: str, termo_extra: str) -> dict:
     resultados.sort(key=lambda r: (0 if r.get("linkedin") else 1, 0 if r.get("cargo") else 1))
     return {
         "empresa": empresa,
-        "tem_provedor": _has_search_provider(),
+        "tem_provedor": _tem_provedor_keyed(),
+        "aviso": aviso_busca(),
         "resultados": resultados[:25],
         "linkedin": sorted(linkedins)[:15],
     }
@@ -126,14 +129,17 @@ async def pesquisar_decisores(
     """Pesquisa na web por decisores de uma empresa (material de estudo)."""
     empresa = (empresa or "").strip()
     if not empresa:
-        return {"empresa": empresa, "tem_provedor": _has_search_provider(), "resultados": [], "linkedin": []}
+        return {"empresa": empresa, "tem_provedor": _tem_provedor_keyed(),
+                "aviso": aviso_busca(), "resultados": [], "linkedin": []}
     try:
         return await asyncio.wait_for(
             asyncio.to_thread(_pesquisar_sync, empresa, (termo_extra or "").strip()),
             timeout=deadline_s,
         )
     except asyncio.TimeoutError:
-        return {"empresa": empresa, "tem_provedor": _has_search_provider(), "resultados": [], "linkedin": []}
+        return {"empresa": empresa, "tem_provedor": _tem_provedor_keyed(),
+                "aviso": "A pesquisa demorou demais e foi interrompida. Tente de novo.",
+                "resultados": [], "linkedin": []}
 
 
 # ---------------------------------------------------------------------------

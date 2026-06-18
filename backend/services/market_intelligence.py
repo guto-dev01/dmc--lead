@@ -1,8 +1,11 @@
 import base64
 import asyncio
 import json
+import logging
 import os
 import re
+import threading
+import time
 import unicodedata
 from collections import Counter
 from typing import Optional
@@ -12,6 +15,27 @@ import httpx
 from bs4 import BeautifulSoup
 
 from services.ramos import RAMO_PADRAO, ramo_busca, ramo_stopwords
+
+logger = logging.getLogger("imobpro.busca")
+
+# Estado do provedor de busca (nível de processo, best-effort) — usado para
+# diagnosticar por que a busca veio vazia. Ex.: chave do Google inválida → o
+# código cai calado no DuckDuckGo, que bloqueia buscas em sequência. Sem isso,
+# a tela só mostra "nada encontrado" sem explicar a causa real.
+_PROVIDER_STATE: dict = {
+    "ultimo_provedor": None,  # "google" | "serper" | "brave" | "duckduckgo"
+    "erros": {},              # provedor -> última mensagem de erro
+}
+
+
+def _registrar_erro(provedor: str, msg: str) -> None:
+    _PROVIDER_STATE["erros"][provedor] = msg
+    logger.warning("Busca: provedor '%s' falhou — %s", provedor, msg)
+
+
+def _registrar_sucesso(provedor: str) -> None:
+    _PROVIDER_STATE["ultimo_provedor"] = provedor
+    _PROVIDER_STATE["erros"].pop(provedor, None)
 
 SEARCH_HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -334,9 +358,11 @@ def _google_cse_search(query: str, limit: int = 6) -> list[dict]:
             timeout=20,
         )
         if response.status_code != 200:
+            _registrar_erro("google", f"HTTP {response.status_code}: {response.text[:200]}")
             return []
         data = response.json()
-    except Exception:
+    except Exception as e:
+        _registrar_erro("google", f"{type(e).__name__}: {e}")
         return []
 
     results = []
@@ -367,9 +393,11 @@ def _serper_search(query: str, limit: int = 6) -> list[dict]:
             timeout=20,
         )
         if response.status_code != 200:
+            _registrar_erro("serper", f"HTTP {response.status_code}: {response.text[:200]}")
             return []
         data = response.json()
-    except Exception:
+    except Exception as e:
+        _registrar_erro("serper", f"{type(e).__name__}: {e}")
         return []
 
     results = []
@@ -409,9 +437,11 @@ def _brave_search(query: str, limit: int = 6) -> list[dict]:
             timeout=20,
         )
         if response.status_code != 200:
+            _registrar_erro("brave", f"HTTP {response.status_code}: {response.text[:200]}")
             return []
         data = response.json()
-    except Exception:
+    except Exception as e:
+        _registrar_erro("brave", f"{type(e).__name__}: {e}")
         return []
 
     results = []
@@ -431,6 +461,13 @@ def _brave_search(query: str, limit: int = 6) -> list[dict]:
 
 DDG_HTML_ENDPOINT = "https://html.duckduckgo.com/html/"
 
+# O DuckDuckGo bloqueia raspagem em rajada (algumas chamadas seguidas → 0
+# resultados, e não recupera por um tempo). Como ele é o fallback gratuito,
+# serializamos e espaçamos as chamadas para reduzir o auto-bloqueio.
+_DDG_LOCK = threading.Lock()
+_DDG_LAST = [0.0]
+_DDG_MIN_INTERVALO = 2.0  # segundos entre chamadas ao DDG
+
 
 def _ddg_unwrap(href: str) -> str:
     """Desembrulha o link real de um resultado do DuckDuckGo (//duckduckgo.com/l/?uddg=...)."""
@@ -449,14 +486,7 @@ def _ddg_unwrap(href: str) -> str:
     return href
 
 
-def _ddg_search(query: str, limit: int = 6) -> list[dict]:
-    """Busca via DuckDuckGo HTML — SEM chave de API. É o fallback gratuito usado
-    quando nenhum provedor com chave (Google/Serper/Brave) está configurado ou
-    quando eles falham. Garante que o "Mapear mercado" funcione de imediato."""
-    try:
-        html = _fetch_sync(DDG_HTML_ENDPOINT, {"q": query, "kl": "br-pt"})
-    except Exception:
-        return []
+def _ddg_parse(html: str, limit: int) -> list[dict]:
     soup = BeautifulSoup(html, "html.parser")
     results: list[dict] = []
     for anchor in soup.select("a.result__a")[:limit]:
@@ -477,10 +507,120 @@ def _ddg_search(query: str, limit: int = 6) -> list[dict]:
     return results
 
 
+def _ddg_fetch_throttled(query: str) -> str:
+    """Busca o HTML do DDG respeitando um intervalo mínimo entre chamadas."""
+    with _DDG_LOCK:
+        espera = _DDG_MIN_INTERVALO - (time.monotonic() - _DDG_LAST[0])
+        if espera > 0:
+            time.sleep(espera)
+        try:
+            html = _fetch_sync(DDG_HTML_ENDPOINT, {"q": query, "kl": "br-pt"})
+        except Exception as e:
+            _registrar_erro("duckduckgo", f"{type(e).__name__}: {e}")
+            html = ""
+        finally:
+            _DDG_LAST[0] = time.monotonic()
+    return html
+
+
+def _ddg_search(query: str, limit: int = 6) -> list[dict]:
+    """Busca via DuckDuckGo HTML — SEM chave de API. É o fallback gratuito usado
+    quando nenhum provedor com chave (Google/Serper/Brave) está configurado ou
+    quando eles falham. Garante que o "Mapear mercado" funcione de imediato.
+
+    O DDG bloqueia raspagem em rajada, então espaçamos as chamadas e, se vier
+    vazio (provável bloqueio), tentamos mais uma vez após uma pausa maior."""
+    results: list[dict] = []
+    for tentativa in range(2):
+        html = _ddg_fetch_throttled(query)
+        results = _ddg_parse(html, limit) if html else []
+        if results:
+            return results
+        if tentativa == 0:
+            time.sleep(3.0)  # provável limitação por raspagem — espera e tenta 1x
+    _registrar_erro("duckduckgo", "sem resultados (provável bloqueio por raspagem)")
+    return results
+
+
 def _has_search_provider() -> bool:
     """Sempre há um provedor utilizável: além de Google CSE / Serper / Brave (com
     chave), existe o fallback gratuito do DuckDuckGo, que não exige configuração."""
     return True
+
+
+def _provedores_keyed_validos() -> list[str]:
+    """Provedores com chave configurados e que *parecem* válidos (validação
+    estática barata, sem chamada de rede). Não inclui o DuckDuckGo."""
+    out: list[str] = []
+    gk = os.environ.get("GOOGLE_API_KEY", "").strip()
+    gc = os.environ.get("GOOGLE_CSE_ID", "").strip()
+    # Chave do Custom Search começa com "AIza"; o CSE ID é um token sem espaço.
+    if gk and gc and gk.startswith("AIza") and " " not in gc:
+        out.append("google")
+    if os.environ.get("SERPER_API_KEY", "").strip():
+        out.append("serper")
+    if os.environ.get("BRAVE_API_KEY", "").strip():
+        out.append("brave")
+    return out
+
+
+def _tem_provedor_keyed() -> bool:
+    """True se há um provedor com chave configurado e aparentemente válido —
+    ou seja, a busca NÃO depende só do fallback instável do DuckDuckGo."""
+    return bool(_provedores_keyed_validos())
+
+
+def diagnostico_busca() -> dict:
+    """Diagnóstico do provedor de busca: o que está configurado, problemas de
+    configuração detectáveis estaticamente e o último erro de cada provedor.
+    Serve para a tela avisar 'busca degradada' em vez de mostrar resultado vazio
+    sem explicação."""
+    gk = os.environ.get("GOOGLE_API_KEY", "").strip()
+    gc = os.environ.get("GOOGLE_CSE_ID", "").strip()
+
+    problemas: list[str] = []
+    if gk or gc:
+        if gk and not gk.startswith("AIza"):
+            problemas.append(
+                "GOOGLE_API_KEY não parece uma chave do Custom Search "
+                "(deve começar com 'AIza'). Talvez seja a chave do Gemini."
+            )
+        if gc and (" " in gc or len(gc) > 40):
+            problemas.append("GOOGLE_CSE_ID parece inválido (contém espaço ou texto extra).")
+        if gk and not gc:
+            problemas.append("GOOGLE_CSE_ID está vazio.")
+        if gc and not gk:
+            problemas.append("GOOGLE_API_KEY está vazio.")
+
+    keyed = _provedores_keyed_validos()
+    if not keyed:
+        problemas.append(
+            "Nenhum provedor de busca com chave válido — usando o fallback "
+            "gratuito do DuckDuckGo, que é instável e bloqueia buscas em sequência. "
+            "Configure GOOGLE/SERPER/BRAVE para resultados confiáveis."
+        )
+
+    usando_ddg = (_PROVIDER_STATE.get("ultimo_provedor") == "duckduckgo") or (not keyed)
+    return {
+        "provedores_keyed": keyed,
+        "tem_provedor_keyed": bool(keyed),
+        "usando_fallback_ddg": usando_ddg,
+        "ultimo_provedor": _PROVIDER_STATE.get("ultimo_provedor"),
+        "erros": dict(_PROVIDER_STATE.get("erros") or {}),
+        "problemas": problemas,
+        "ok": bool(keyed) and not problemas,
+    }
+
+
+def aviso_busca() -> Optional[str]:
+    """Mensagem para a tela quando a busca está realmente degradada — isto é,
+    quando NÃO há provedor com chave válido e dependemos do DuckDuckGo. Se um
+    provedor com chave funciona, não alarma (ainda que outro esteja mal
+    configurado mas sem uso)."""
+    diag = diagnostico_busca()
+    if diag["tem_provedor_keyed"]:
+        return None
+    return " ".join(diag["problemas"]) if diag["problemas"] else None
 
 
 def _web_search(query: str, limit: int = 6) -> list[dict]:
@@ -490,17 +630,23 @@ def _web_search(query: str, limit: int = 6) -> list[dict]:
     if os.environ.get("GOOGLE_API_KEY", "").strip() and os.environ.get("GOOGLE_CSE_ID", "").strip():
         results = _google_cse_search(query, limit)
         if results:
+            _registrar_sucesso("google")
             return results
     if os.environ.get("SERPER_API_KEY", "").strip():
         results = _serper_search(query, limit)
         if results:
+            _registrar_sucesso("serper")
             return results
     if os.environ.get("BRAVE_API_KEY", "").strip():
         results = _brave_search(query, limit)
         if results:
+            _registrar_sucesso("brave")
             return results
     # Fallback gratuito, sem chave — funciona para qualquer ramo de imediato.
-    return _ddg_search(query, limit)
+    results = _ddg_search(query, limit)
+    if results:
+        _registrar_sucesso("duckduckgo")
+    return results
 
 
 def _page_text_from_html(html: str) -> str:

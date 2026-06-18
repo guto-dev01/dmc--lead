@@ -3596,8 +3596,10 @@ export default function App() {
 
                 {pesquisaResultado && (
                   <div className="space-y-3 pt-1">
-                    {pesquisaResultado.tem_provedor === false && (
-                      <p className="text-amber-300 text-xs">Provedor de busca não configurado no servidor (defina GOOGLE/SERPER/BRAVE). A lista de QSA abaixo continua funcionando.</p>
+                    {(pesquisaResultado.aviso || pesquisaResultado.tem_provedor === false) && (
+                      <p className="text-amber-300 text-xs">
+                        ⚠️ {pesquisaResultado.aviso || "Provedor de busca não configurado no servidor (defina GOOGLE/SERPER/BRAVE)."} A lista de QSA abaixo continua funcionando.
+                      </p>
                     )}
                     {pesquisaResultado.linkedin?.length > 0 && (
                       <div>
