@@ -1,5 +1,6 @@
-// Catálogo de Assistentes Jurídicos (GPTs) — 78 assistentes especializados
-// em Direito Brasileiro. Cada item abre o respectivo GPT no ChatGPT.
+// Catálogo de Assistentes Jurídicos (GPTs) — 106 assistentes especializados
+// em Direito Brasileiro. Itens com `url` abrem o GPT original no ChatGPT;
+// itens com `nativo: true` rodam apenas no chat nativo do ImobPro.
 export const GPTS = [
   // ── PODER JUDICIÁRIO ──
   { nome: "GPT Judiciário – Elaboração de Voto", categoria: "Poder Judiciário", descricao: "Auxilia juízes e desembargadores na elaboração de votos judiciais. Insira os autos ou documentos do caso e pressione ENTER.", url: "https://chatgpt.com/g/g-6755bdf3b6c48191ac19d7511e7a41d3-gpt-judiciario-elaboracao-de-voto" },
@@ -110,6 +111,58 @@ export const GPTS = [
 
   // ── TRANSCRIÇÃO DE ÁUDIO ──
   { nome: "Transcreve-AI – Transcrição de Áudios e Vídeos", categoria: "Transcrição de Áudio", descricao: "Transcrição/degravação de áudios e vídeos diretamente no WhatsApp, com identificação de participantes em audiências.", url: "https://transcreve-ai.com/" },
+
+  // ── CRIAÇÃO DE PROMPTS (nativos) ──
+  { nome: "GPT – Criador de Prompts Jurídicos (Engenharia de Contexto)", categoria: "Criação de Prompts", nativo: true, descricao: "Cria prompts jurídicos avançados com engenharia de contexto: papel, objetivo, restrições, formato de saída e exemplos. Diga a tarefa desejada." },
+  { nome: "GPT – Gerador e Aprimorador de Prompts Jurídicos", categoria: "Criação de Prompts", nativo: true, descricao: "Revisa e aprimora um prompt jurídico existente, corrigindo ambiguidades e reforçando restrições e formato. Cole o prompt atual." },
+  { nome: "Imersão – Criador de Prompts Jurídicos Avançados", categoria: "Criação de Prompts", nativo: true, descricao: "Conduz uma imersão guiada por perguntas até produzir um prompt jurídico sob medida, refinado iterativamente. Responda às perguntas." },
+
+  // ── DIREITO CIVIL (nativos) ──
+  { nome: "Oráculo Jurídico – Direito Civil", categoria: "Direito Civil", nativo: true, descricao: "Consultor de Direito Civil: obrigações, contratos, responsabilidade civil, reais, família e sucessões, com base no Código Civil. Descreva o caso." },
+
+  // ── DIREITO PENAL (nativos) ──
+  { nome: "GPT Penal – Dosimetria da Pena", categoria: "Direito Penal", nativo: true, descricao: "Calcula a dosimetria trifásica da pena (art. 68 CP): pena-base, agravantes/atenuantes e causas de aumento/diminuição. Informe o tipo penal e as circunstâncias." },
+
+  // ── DIREITO TRIBUTÁRIO (nativos) ──
+  { nome: "GPT Tributário – Análise de Execução Fiscal", categoria: "Direito Tributário", nativo: true, descricao: "Analisa a CDA e a execução fiscal: requisitos, prescrição, exceção de pré-executoricidade e embargos. Anexe a CDA e a petição inicial." },
+  { nome: "GPT Tributário – Despacho de Resposta à Auditoria Tributária", categoria: "Direito Tributário", nativo: true, descricao: "Elabora impugnação/defesa a auto de infração ou intimação fiscal, fundamentada no CTN e na legislação tributária. Anexe o auto de infração." },
+  { nome: "GPT Tributário – Parecer em Execução Fiscal", categoria: "Direito Tributário", nativo: true, descricao: "Parecer sobre a viabilidade da defesa em execução fiscal, com análise de riscos e recomendação estratégica. Anexe os autos." },
+
+  // ── DIREITO DO TRABALHO (nativos) ──
+  { nome: "GPT Trabalhista – Manifestação em Execução Trabalhista", categoria: "Direito do Trabalho", nativo: true, descricao: "Redige manifestação/impugnação na execução trabalhista: cálculos de liquidação, penhora e embargos à execução. Anexe a conta de liquidação." },
+  { nome: "GPT Trabalhista – Parecer em Direito do Trabalho", categoria: "Direito do Trabalho", nativo: true, descricao: "Parecer sobre vínculo, verbas rescisórias, jornada, terceirização e riscos de passivo trabalhista. Descreva a situação." },
+
+  // ── CRIAÇÃO DE PEÇAS JURÍDICAS (nativos) ──
+  { nome: "GPT – Petição Inicial de Mandado de Segurança", categoria: "Criação de Peças Jurídicas", nativo: true, descricao: "Redige inicial de Mandado de Segurança individual: autoridade coatora, direito líquido e certo, liminar e pedidos. Informe o ato coator." },
+  { nome: "GPT – Mandado de Segurança no Juizado Especial", categoria: "Criação de Peças Jurídicas", nativo: true, descricao: "Inicial de MS no âmbito dos Juizados Especiais, adaptada ao rito e à competência. Informe o ato e o juizado." },
+  { nome: "GPT – Petição Inicial de Ação de Busca e Apreensão", categoria: "Criação de Peças Jurídicas", nativo: true, descricao: "Inicial de busca e apreensão em alienação fiduciária (DL 911/69): mora, liminar e consolidação da propriedade. Informe o contrato e a mora." },
+  { nome: "GPT – Petição de Prorrogação de Prazo Processual", categoria: "Criação de Peças Jurídicas", nativo: true, descricao: "Requerimento fundamentado de prorrogação/devolução de prazo, com base legal e justificativa. Informe o prazo e o motivo." },
+  { nome: "GPT – Petição Inicial de Justiça Gratuita (Pessoa Jurídica)", categoria: "Criação de Peças Jurídicas", nativo: true, descricao: "Pedido de gratuidade de justiça para pessoa jurídica, com a prova de insuficiência exigida pelo STJ. Informe a situação financeira." },
+  { nome: "GPT – Petição de Destacamento de Honorários Contratuais", categoria: "Criação de Peças Jurídicas", nativo: true, descricao: "Petição de destaque/reserva de honorários advocatícios contratuais sobre o crédito (art. 22, §4º, EAOAB). Anexe o contrato de honorários." },
+  { nome: "GPT – Petição de Habeas Corpus (Advocacia)", categoria: "Criação de Peças Jurídicas", nativo: true, descricao: "Impetração de Habeas Corpus pela defesa: constrangimento ilegal, liminar e ordem. Descreva a coação e o paciente." },
+  { nome: "GPT – Procuração Pública ou Particular", categoria: "Criação de Peças Jurídicas", nativo: true, descricao: "Gera procuração ad judicia e/ou ad negotia, com poderes gerais e especiais conforme a finalidade. Informe outorgante, outorgado e finalidade." },
+  { nome: "GPT – Contrarrazões ao Recurso de Apelação", categoria: "Criação de Peças Jurídicas", nativo: true, descricao: "Redige contrarrazões à apelação da parte contrária, refutando cada fundamento e pedindo a manutenção da sentença. Anexe a apelação e a sentença." },
+
+  // ── EXTRAÇÃO DE DADOS (nativos) ──
+  { nome: "GPT – Resumo do Processo (Metodologia FIRAC)", categoria: "Extração de Dados", nativo: true, descricao: "Resume o processo pela metodologia FIRAC: Fatos, Issue (questão), Regra, Análise e Conclusão. Anexe os autos." },
+  { nome: "GPT – Checklist de Conferência de Parecer Jurídico", categoria: "Extração de Dados", nativo: true, descricao: "Confere um parecer jurídico por checklist: completude, fundamentação, riscos, conclusão e revisão formal. Anexe o parecer." },
+
+  // ── ESTRATÉGIA DO CASO (nativo) ──
+  { nome: "GPT – Definição das Teses Jurídicas Estratégicas", categoria: "Estratégia do Caso", nativo: true, descricao: "Define e prioriza as teses jurídicas mais fortes para o caso, com fundamento e ordem de alegação. Descreva os fatos e o objetivo." },
+
+  // ── MARKETING JURÍDICO (nativos) ──
+  { nome: "GPT – Especialista em Prospecção Jurídica", categoria: "Marketing Jurídico", nativo: true, descricao: "Cria estratégias de prospecção de clientes para advogados, respeitando o Provimento 205/2021 da OAB. Informe a área e o público." },
+  { nome: "GPT – Contrato de Serviços Advocatícios", categoria: "Marketing Jurídico", nativo: true, descricao: "Gera contrato de prestação de serviços advocatícios e honorários, conforme o EAOAB. Informe as partes, o objeto e os honorários." },
+
+  // ── NEGOCIAÇÃO E CONFLITOS (nativos) ──
+  { nome: "GPT – Negociador Jurídico Avançado", categoria: "Negociação e Conflitos", nativo: true, descricao: "Conduz estratégias de negociação e acordos com técnicas avançadas (BATNA, ancoragem, interesses). Descreva o conflito e o objetivo." },
+  { nome: "GPT – Rebater Argumentos com Precisão", categoria: "Negociação e Conflitos", nativo: true, descricao: "Refuta argumentos da parte contrária ponto a ponto, com lógica e fundamento jurídico. Cole o argumento a rebater." },
+
+  // ── ATENDIMENTO AO CLIENTE (nativo) ──
+  { nome: "GPT – Traduzir Documentos Jurídicos para Clientes", categoria: "Atendimento ao Cliente", nativo: true, descricao: "Reescreve peças e decisões em linguagem clara para o cliente leigo, sem perder a precisão. Anexe o documento jurídico." },
+
+  // ── REVISÃO E MELHORIA DE TEXTOS (nativo) ──
+  { nome: "GPT – Otimizador Retórico Avançado", categoria: "Revisão e Melhoria de Textos", nativo: true, descricao: "Eleva a força persuasiva do texto jurídico com técnicas retóricas (ethos, pathos, logos) sem comprometer a técnica. Cole o texto." },
 ];
 
 export const CATEGORIAS = [
@@ -126,6 +179,11 @@ export const CATEGORIAS = [
   "Marketing Jurídico",
   "Contratos",
   "Negociação e Conflitos",
+  "Criação de Prompts",
+  "Direito Civil",
+  "Direito Penal",
+  "Direito Tributário",
+  "Direito do Trabalho",
   "Áreas do Direito",
   "Segurança Pública",
   "Otimização para IA do Judiciário",
@@ -146,6 +204,11 @@ export const CAT_COR = {
   "Marketing Jurídico": "#34d399",
   "Contratos": "#12e7ff",
   "Negociação e Conflitos": "#00ff6a",
+  "Criação de Prompts": "#00ff6a",
+  "Direito Civil": "#7dd3fc",
+  "Direito Penal": "#34d399",
+  "Direito Tributário": "#f59e0b",
+  "Direito do Trabalho": "#12e7ff",
   "Áreas do Direito": "#f59e0b",
   "Segurança Pública": "#7dd3fc",
   "Otimização para IA do Judiciário": "#34d399",

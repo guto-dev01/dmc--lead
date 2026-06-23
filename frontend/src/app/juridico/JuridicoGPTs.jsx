@@ -126,7 +126,7 @@ export default function JuridicoGPTs({ api }) {
             const cor = CAT_COR[g.categoria] || "#12e7ff";
             return (
               <div
-                key={g.url}
+                key={g.url || g.nome}
                 onClick={() => setChatAlvo(g)}
                 className="group surface flex flex-col gap-3 p-5 rounded-[16px] border border-[var(--hairline)] hover:border-[rgba(18,231,255,0.3)] transition-all duration-200 hover:-translate-y-0.5 cursor-pointer"
                 style={{ boxShadow: "var(--shadow-sm)" }}
@@ -152,16 +152,25 @@ export default function JuridicoGPTs({ api }) {
 
                 {/* Ações */}
                 <div className="flex items-center justify-between pt-3 border-t border-[var(--hairline)]">
-                  <a
-                    href={g.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={(e) => e.stopPropagation()}
-                    className="inline-flex items-center gap-1 text-[11.5px] text-[#5f7980] hover:text-[var(--accent-cyan)] transition-colors"
-                    title="Abrir o GPT original no ChatGPT"
-                  >
-                    ChatGPT {I.external}
-                  </a>
+                  {g.url ? (
+                    <a
+                      href={g.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      className="inline-flex items-center gap-1 text-[11.5px] text-[#5f7980] hover:text-[var(--accent-cyan)] transition-colors"
+                      title="Abrir o GPT original no ChatGPT"
+                    >
+                      ChatGPT {I.external}
+                    </a>
+                  ) : (
+                    <span
+                      className="inline-flex items-center gap-1 text-[11.5px] text-[#5f7980]"
+                      title="Assistente nativo do ImobPro (não há GPT no ChatGPT)"
+                    >
+                      ★ Nativo
+                    </span>
+                  )}
                   <span
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11.5px] font-semibold text-[#06262b] group-hover:scale-105 transition-transform"
                     style={{ background: "var(--accent-gradient)" }}
